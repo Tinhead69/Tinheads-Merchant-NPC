@@ -1,0 +1,20 @@
+<section class="merchant-layout">
+  <header class="merchant-heading"><img src="{{actor.img}}" alt=""><div><h2>{{actor.name}}</h2><p>Merchant funds: {{funds}}</p></div></header>
+  {{#if isGM}}
+  <div class="merchant-controls">
+    <div class="merchant-add">
+      <label>World item<select name="worldItem"><option value="">Select an item…</option>{{#each (lookup @root "worldItems") as |item|}}<option value="{{item.id}}">{{item.name}}</option>{{/each}}</select></label>
+      <button type="button" data-action="addWorldItem">Add</button>
+    </div>
+    <p class="hint">Drag an item from the Items sidebar or a compendium onto this sheet to add it.</p>
+    <div class="merchant-packs"><strong>Random stock sources</strong>{{#each packs as |pack|}}<label><input type="checkbox" name="sourcePack" value="{{pack.collection}}"> {{pack.label}}</label>{{/each}}<button type="button" data-action="generate">Generate {{@root.randomCount}} random items</button></div>
+  </div>
+  {{/if}}
+  <div class="merchant-buy-select"><label>Buyer<select name="buyer"><option value="">Choose player character…</option>{{#each buyers as |buyer|}}<option value="{{buyer.id}}">{{buyer.name}}</option>{{/each}}</select></label></div>
+  <ul class="merchant-stock">
+    {{#each stock as |item|}}
+      <li class="merchant-item"><img src="{{item.img}}" alt=""><div class="merchant-item-name"><strong>{{item.name}}</strong><small>{{item.type}} · Qty {{item.quantity}}</small></div><div class="merchant-price">{{item.system.price.value}} {{item.system.price.denomination}}</div>
+      <button type="button" data-action="buy" data-id="{{item.id}}">Buy</button>{{#if @root.isGM}}<button type="button" class="icon-button" data-action="removeItem" data-id="{{item.id}}" title="Remove"><i class="fas fa-trash"></i></button>{{/if}}</li>
+    {{else}}<li class="empty">No items for sale yet.</li>{{/each}}
+  </ul>
+</section>

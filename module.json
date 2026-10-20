@@ -1,0 +1,16 @@
+{
+  "id": "merchant-npc",
+  "title": "Merchant NPC",
+  "description": "Manage merchant stock, generate shop inventories, and complete purchases with D&D 5e currency.",
+  "version": "0.1.0",
+  "url": "https://github.com/Tinhead69/Tinheads-Merchant-NPC",
+  "manifest": "https://raw.githubusercontent.com/Tinhead69/Tinheads-Merchant-NPC/main/module.json",
+  "download": "https://github.com/Tinhead69/Tinheads-Merchant-NPC/releases/download/v0.1.0/merchant-npc-0.1.0.zip",
+  "bugs": "https://github.com/Tinhead69/Tinheads-Merchant-NPC/issues",
+  "compatibility": { "minimum": "13", "verified": "13.351" },
+  "authors": [{ "name": "Martin Zealey" }],
+  "systems": ["dnd5e"],
+  "relationships": { "systems": [{ "id": "dnd5e", "type": "system", "compatibility": { "minimum": "5.0.0", "verified": "5.0.0" } }] },
+  "esmodules": ["scripts/merchant-npc.js"],
+  "styles": ["styles/merchant-npc.css"]
+}
