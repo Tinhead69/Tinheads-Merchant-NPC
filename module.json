@@ -2,7 +2,7 @@
   "id": "Tinheads-Merchant-NPC",
   "title": "Tinhead's Merchant NPC",
   "description": "A module to allow you to create usable Merchants with your game.",
-  "version": "0.1,"
+  "version": "0.1",
   "compatibility": {
     "minimum": "13",
     "verified": "13.351"
