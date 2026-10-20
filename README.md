@@ -6,9 +6,9 @@ An installable Foundry VTT module for Foundry 13.351 and D&D 5e 5.0.0.
 
 Repository: [Tinhead69/Tinheads-Merchant-NPC](https://github.com/Tinhead69/Tinheads-Merchant-NPC)  
 Foundry manifest URL: `https://raw.githubusercontent.com/Tinhead69/Tinheads-Merchant-NPC/main/module.json`  
-Release download URL: `https://github.com/Tinhead69/Tinheads-Merchant-NPC/releases/download/v0.1.1/merchant-npc-0.1.1.zip`
+Release download URL: `https://github.com/Tinhead69/Tinheads-Merchant-NPC/releases/download/v0.1.3/merchant-npc-0.1.3.zip`
 
-In Foundry's **Install Module** screen, paste the manifest URL. For each release, create a GitHub release whose tag matches the version (for example, `v0.1.1`) and attach the ZIP with the exact filename shown in the release download URL above. Update the version and download URL in `module.json` for subsequent releases.
+In Foundry's **Install Module** screen, paste the manifest URL. For each release, create a GitHub release whose tag matches the version (for example, `v0.1.3`) and attach the ZIP with the exact filename shown in the release download URL above. Update the version and download URL in `module.json` for subsequent releases.
 
 ## Install
 
@@ -17,7 +17,9 @@ Copy the `merchant-npc` folder into your Foundry `Data/modules` directory, then 
 ## Use
 
 - Open an NPC actor sheet and click **Shop** in its header, or use **Open Merchant Shop** from the Actors directory context menu.
+- Choose a shop type when opening the shop. Random generation and displayed stock are filtered to General Goods, Equipment, Weapons, Armour, Potions, or Magic Items.
 - GMs can add world items with the selector, drag items from the Items sidebar or a compendium onto the shop, remove stock, and choose compendiums for random stock generation.
+- GMs can set the merchant's purse to a custom amount in gp, or use Poor (200 gp), Average (500 gp), and Rich (1,000 gp) starting-float presets. Jewellers use ten times those preset values.
 - Set each item's price in its D&D 5e item data before listing it. Stock quantity is tracked by the shop; a purchase sells one unit.
 - Players choose a character they own and click **Buy**. The module totals that character's `system.currency` denominations, checks the exact value against the price, deducts the price, adds the item to the character, credits the merchant, and reduces stock.
 - Merchant stock is saved in the NPC actor's `merchant-npc.stock` flag; merchant funds use the NPC's normal D&D 5e currency fields.
