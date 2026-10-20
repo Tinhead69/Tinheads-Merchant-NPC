@@ -6,9 +6,9 @@ An installable Foundry VTT module for Foundry 13.351 and D&D 5e 5.0.0.
 
 Repository: [Tinhead69/Tinheads-Merchant-NPC](https://github.com/Tinhead69/Tinheads-Merchant-NPC)  
 Foundry manifest URL: `https://raw.githubusercontent.com/Tinhead69/Tinheads-Merchant-NPC/main/module.json`  
-Release download URL: `https://github.com/Tinhead69/Tinheads-Merchant-NPC/releases/download/v0.1.4/merchant-npc-0.1.4.zip`
+Release download URL: `https://github.com/Tinhead69/Tinheads-Merchant-NPC/releases/download/v0.1.5/merchant-npc-0.1.5.zip`
 
-In Foundry's **Install Module** screen, paste the manifest URL. For each release, create a GitHub release whose tag matches the version (for example, `v0.1.4`) and attach the ZIP with the exact filename shown in the release download URL above. Update the version and download URL in `module.json` for subsequent releases.
+In Foundry's **Install Module** screen, paste the manifest URL. For each release, create a GitHub release whose tag matches the version (for example, `v0.1.5`) and attach the ZIP with the exact filename shown in the release download URL above. Update the version and download URL in `module.json` for subsequent releases.
 
 ## Install
 
@@ -19,6 +19,7 @@ Copy the `merchant-npc` folder into your Foundry `Data/modules` directory, then 
 - Open an NPC actor sheet and click **Shop** in its header, or use **Open Merchant Shop** from the Actors directory context menu.
 - Choose a shop type when opening the shop. Jeweller shops receive ten-times-higher float presets.
 - GMs can use the three-pane **Add Items** browser to filter by item type and source, add individual items, randomly add items from selected sources, or roll world and compendium Rollable Tables that link to Item documents.
+- Add Items starts with all category checkboxes off. Its categories are Potions, Weapons, Armour, Magic Items, and Normal Equipment; magical weapons and armour stay in their physical category.
 - The merchant sheet shows the full shop inventory. GMs can edit stock quantities and prices, remove items, and set a starting purse.
 - GMs can set the merchant's purse to a custom amount in gp, or use Poor (200 gp), Average (500 gp), and Rich (1,000 gp) starting-float presets. Jewellers use ten times those preset values.
 - Set each item's price in its D&D 5e item data before listing it. Stock quantity is tracked by the shop; a purchase sells one unit.

@@ -2,10 +2,30 @@ const MODULE_ID = "merchant-npc";
 const CURRENCY = { pp: 1000, gp: 100, ep: 50, sp: 10, cp: 1 };
 const FLOAT_PRESETS = [["Poor", 200], ["Average", 500], ["Rich", 1000]];
 const SHOP_TYPES = { general: "General Goods", equipment: "Equipment", weapons: "Weapons", armour: "Armour", potions: "Potions", magic: "Magic Items", jeweller: "Jeweller" };
-const ITEM_TYPE_LABELS = { weapon: "Weapons", equipment: "Equipment", consumable: "Consumables", tool: "Tools", loot: "Loot", spell: "Spells", container: "Containers", feat: "Features", class: "Classes", subclass: "Subclasses", background: "Backgrounds", race: "Races", species: "Species" };
+const ITEM_CATEGORIES = [
+  ["potions", "Potions"], ["weapons", "Weapons"], ["armour", "Armour"],
+  ["magic", "Magic Items"], ["equipment", "Normal Equipment"]
+];
 
 function priceLabel(price = {}) { return `${price.value ?? price.amount ?? 0} ${price.denomination ?? price.currency ?? "gp"}`; }
 function isItemDocument(document) { return document?.documentName === "Item"; }
+function classifyItem(item) {
+  const system = item.system ?? {};
+  const subtype = String(system.type?.value ?? system.type ?? system.consumableType ?? "").toLowerCase();
+  const properties = system.properties instanceof Set ? [...system.properties] : Array.isArray(system.properties) ? system.properties : Object.entries(system.properties ?? {}).filter(([, value]) => Boolean(value)).map(([key]) => key);
+  const rarity = String(system.rarity?.value ?? system.rarity ?? "").toLowerCase();
+  const attunement = String(system.attunement?.value ?? system.attunement ?? "").toLowerCase();
+  const magical = Boolean(system.magical || (rarity && !["none", "mundane"].includes(rarity)) || (attunement && attunement !== "none") || properties.some(value => String(value).toLowerCase() === "mgc"));
+  const armour = item.type === "equipment" && Boolean(system.armor || ["light", "medium", "heavy", "shield"].includes(subtype));
+  const potion = item.type === "consumable" && (subtype.includes("potion") || String(system.identifier ?? "").toLowerCase().includes("potion"));
+  // Specific physical categories take priority over magical status.
+  if (item.type === "weapon") return "weapons";
+  if (armour) return "armour";
+  if (potion) return "potions";
+  if (magical) return "magic";
+  if (["equipment", "tool", "loot", "container"].includes(item.type)) return "equipment";
+  return null;
+}
 
 Hooks.once("init", () => {
   game.settings.register(MODULE_ID, "randomCount", { name: "Random stock count", hint: "Default number of items added by random compendium generation.", scope: "world", config: true, type: Number, default: 10, range: { min: 1, max: 100, step: 1 } });
@@ -160,7 +180,7 @@ class ItemBrowser extends HandlebarsApplicationMixin(ApplicationV2) {
     this.actor = actor;
     this.merchantSheet = merchantSheet;
     this.catalog = null;
-    this.selectedTypes = null;
+    this.selectedTypes = new Set();
     this.selectedSources = null;
     this.search = "";
     this.visibleItems = [];
@@ -174,11 +194,11 @@ class ItemBrowser extends HandlebarsApplicationMixin(ApplicationV2) {
   async #loadCatalog() {
     if (this.catalog) return this.catalog;
     const sources = [];
-    const worldItems = game.items.contents.map(item => ({ _id: item.id, name: item.name, img: item.img, type: item.type, item, source: "world-items" }));
+    const worldItems = game.items.contents.map(item => ({ _id: item.id, name: item.name, img: item.img, type: item.type, category: classifyItem(item), item, source: "world-items" })).filter(item => item.category);
     if (worldItems.length) sources.push({ id: "world-items", label: "World Items", items: worldItems, world: true });
     for (const pack of game.packs.filter(candidate => candidate.documentName === "Item")) {
-      await pack.getIndex();
-      const items = [...pack.index].map(entry => ({ _id: entry._id, name: entry.name, img: entry.img, type: entry.type, source: pack.collection }));
+      await pack.getIndex({ fields: ["system.type.value", "system.armor", "system.rarity", "system.attunement", "system.properties", "system.magical", "system.identifier"] });
+      const items = [...pack.index].map(entry => ({ _id: entry._id, name: entry.name, img: entry.img, type: entry.type, category: classifyItem(entry), source: pack.collection })).filter(item => item.category);
       if (items.length) sources.push({ id: pack.collection, label: pack.title, items, world: false });
     }
     sources.sort((a, b) => a.label.localeCompare(b.label));
@@ -187,17 +207,15 @@ class ItemBrowser extends HandlebarsApplicationMixin(ApplicationV2) {
   }
   async _prepareContext() {
     const sources = await this.#loadCatalog();
-    const allTypes = [...new Set(sources.flatMap(source => source.items.map(item => item.type).filter(Boolean)))].sort();
-    this.selectedTypes ??= new Set(allTypes);
-    const matchingSources = sources.filter(source => source.items.some(item => this.selectedTypes.has(item.type)));
+    const typeOptions = ITEM_CATEGORIES.map(([value, label]) => ({ value, label, checked: this.selectedTypes.has(value) }));
+    const matchingSources = sources.filter(source => source.items.some(item => this.selectedTypes.has(item.category)));
     this.selectedSources ??= new Set(matchingSources.map(source => source.id));
     this.selectedSources = new Set([...this.selectedSources].filter(id => matchingSources.some(source => source.id === id)));
-    const typeOptions = allTypes.map(value => ({ value, label: ITEM_TYPE_LABELS[value] ?? value[0].toUpperCase() + value.slice(1), checked: this.selectedTypes.has(value) }));
-    const sourceOptions = matchingSources.map(source => ({ id: source.id, label: source.label, count: source.items.filter(item => this.selectedTypes.has(item.type)).length, checked: this.selectedSources.has(source.id) }));
+    const sourceOptions = matchingSources.map(source => ({ id: source.id, label: source.label, count: source.items.filter(item => this.selectedTypes.has(item.category)).length, checked: this.selectedSources.has(source.id) }));
     const query = this.search.trim().toLowerCase();
     this.visibleItems = matchingSources.filter(source => this.selectedSources.has(source.id)).flatMap(source => source.items
-      .filter(item => this.selectedTypes.has(item.type) && (!query || item.name.toLowerCase().includes(query)))
-      .map(item => ({ ...item, typeLabel: ITEM_TYPE_LABELS[item.type] ?? item.type, sourceLabel: sources.find(source => source.id === item.source)?.label ?? item.source })))
+      .filter(item => this.selectedTypes.has(item.category) && (!query || item.name.toLowerCase().includes(query)))
+      .map(item => ({ ...item, typeLabel: ITEM_CATEGORIES.find(([value]) => value === item.category)?.[1] ?? item.type, sourceLabel: sources.find(source => source.id === item.source)?.label ?? item.source })))
       .sort((a, b) => a.name.localeCompare(b.name));
     const tables = await getRollTables();
     return { actor: this.actor, types: typeOptions, sources: sourceOptions, items: this.visibleItems, tables, search: this.search, randomCount: game.settings.get(MODULE_ID, "randomCount"), isGM: game.user.isGM };
