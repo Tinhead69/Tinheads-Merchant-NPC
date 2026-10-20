@@ -7,7 +7,7 @@
   {{#if isGM}}
   <section class="merchant-admin merchant-panel">
     <div class="merchant-panel-heading"><h3>Shop setup</h3><button type="button" data-action="addItems"><i class="fas fa-plus"></i> Add Items</button></div>
-    <p class="hint">Shop type: {{shopTypeLabel}}</p>
+    <div class="shop-type-control"><label>Shop type<select name="shopType">{{#each shopTypeOptions as |option|}}<option value="{{option.value}}" {{#if option.selected}}selected{{/if}}>{{option.label}}</option>{{/each}}</select></label><button type="button" data-action="setShopType">Set Shop Type</button></div>
     <div class="merchant-float-controls">
       <label>Starting float preset<select name="floatPreset"><option value="">Choose a preset…</option>{{#each floatPresets as |preset|}}<option value="{{preset.value}}">{{preset.label}}</option>{{/each}}<option value="custom">Custom amount</option></select></label>
       <label>Custom amount (gp)<input type="number" name="floatAmount" min="0" step="0.01" value="0"></label>
@@ -16,8 +16,6 @@
     <p class="hint">{{floatHint}} Normal presets: Poor 200 gp, Average 500 gp, Rich 1,000 gp. Jeweller presets are 10×.</p>
   </section>
   {{/if}}
-
-  <div class="merchant-buy-select"><label>Buyer<select name="buyer"><option value="">Choose player character…</option>{{#each buyers as |buyer|}}<option value="{{buyer.id}}">{{buyer.name}}</option>{{/each}}</select></label></div>
 
   <section class="merchant-stock-area">
     <h3>Shop Items <span>{{stock.length}} listed</span></h3>

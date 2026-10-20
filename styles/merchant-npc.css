@@ -7,6 +7,7 @@
 .merchant-npc .merchant-panel { display: grid; gap: .45rem; padding: .65rem; border: 1px solid var(--color-border-light-2); border-radius: 5px; background: var(--color-cool-5-90); }
 .merchant-npc .merchant-panel h3, .merchant-npc .merchant-stock-area h3 { margin: 0; }
 .merchant-npc .merchant-panel-heading, .merchant-npc .merchant-float-controls, .merchant-npc .merchant-buy-select { display: flex; align-items: end; gap: .5rem; }
+.merchant-npc .shop-type-control { display: flex; align-items: end; gap: .5rem; }
 .merchant-npc label { display: flex; flex-direction: column; gap: .2rem; flex: 1; }
 .merchant-npc select, .merchant-npc input { min-height: 2rem; }
 .merchant-npc .hint, .merchant-npc .empty { margin: 0; font-size: .85em; opacity: .8; }
@@ -24,12 +25,11 @@
 .merchant-npc .stock-field input { width: 100%; }
 .merchant-npc .icon-button { width: 2rem; }
 .merchant-open { margin: 0 .35rem; }
-.merchant-shop-type-prompt { display: flex; flex-direction: column; gap: .4rem; }
 
 .merchant-item-browser { min-width: 760px; }
 .merchant-item-browser .window-content { padding: 0; overflow: hidden; }
 .item-browser-layout { height: 100%; min-height: 0; display: grid; grid-template-columns: 250px minmax(0, 1fr); gap: .7rem; padding: .75rem; }
-.item-browser-sidebar { min-height: 0; display: grid; grid-template-rows: minmax(0, 1fr) minmax(0, 1fr) auto; gap: .55rem; }
+.item-browser-sidebar { min-height: 0; display: grid; grid-template-rows: minmax(0, .8fr) auto minmax(0, 1.2fr); gap: .55rem; }
 .filter-pane { min-height: 0; display: flex; flex-direction: column; gap: .4rem; padding: .5rem; border: 1px solid var(--color-border-light-2); border-radius: 5px; }
 .filter-pane h3, .table-generator h3, .available-items h3 { margin: 0; font-size: 1em; }
 .filter-list { min-height: 0; overflow: auto; display: grid; align-content: start; gap: .15rem; }
@@ -48,7 +48,9 @@
 .available-heading h3 { flex: 1; }
 .available-heading h3 span { opacity: .7; }
 .available-heading label { max-width: 15rem; }
-.random-controls { justify-content: end; }
+.random-controls { justify-content: flex-start; padding: .4rem .55rem; border: 1px solid var(--color-border-light-2); border-radius: 4px; background: var(--color-cool-5-90); }
+.random-controls strong { margin-right: auto; }
+.random-controls label { max-width: 9rem; }
 .available-item-list { min-height: 0; overflow: auto; list-style: none; padding: 0; margin: 0; display: grid; align-content: start; }
 .available-item-list li { display: flex; align-items: center; gap: .5rem; padding: .35rem 0; border-bottom: 1px solid var(--color-border-light-2); }
 .available-item-list img { width: 32px; height: 32px; object-fit: cover; border: 0; }
