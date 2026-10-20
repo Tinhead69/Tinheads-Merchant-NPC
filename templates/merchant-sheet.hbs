@@ -21,7 +21,7 @@
     <h3>Shop Items <span>{{stock.length}} listed</span></h3>
     <ul class="merchant-stock">
       {{#each stock as |item|}}
-        <li class="merchant-item {{#if @root.isGM}}merchant-item-gm{{/if}}" data-stock-id="{{item.id}}">
+        <li class="merchant-item {{#if @root.isGM}}merchant-item-gm{{/if}}" data-stock-id="{{item.id}}" title="{{item.description}}">
           <img src="{{item.img}}" alt="">
           <div class="merchant-item-name"><strong>{{item.name}}</strong><small>{{item.type}}</small></div>
           {{#if @root.isGM}}

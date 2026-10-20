@@ -39,6 +39,23 @@ Hooks.once("ready", () => {
     if (game.user.isGM) await actor.setFlag(MODULE_ID, "isShop", true);
     return new MerchantSheet(actor).render(true);
   } };
+  // Override the documented Token double-left-click handler so shop access does not
+  // depend on Foundry first allowing the player to open the NPC's actor sheet.
+  const TokenClass = CONFIG.Token.objectClass;
+  if (TokenClass?.prototype?._onClickLeft2 && !TokenClass.prototype._merchantNPCWrapped) {
+    const originalDoubleClick = TokenClass.prototype._onClickLeft2;
+    TokenClass.prototype._onClickLeft2 = function(event, ...args) {
+      const actor = this.actor;
+      const canViewActor = actor?.testUserPermission(game.user, CONST.DOCUMENT_OWNERSHIP_LEVELS.OBSERVER);
+      if (!game.user.isGM && isConfiguredShop(actor) && !canViewActor) {
+        event?.stopPropagation?.();
+        game.merchantNPC.open(actor);
+        return;
+      }
+      return originalDoubleClick.call(this, event, ...args);
+    };
+    TokenClass.prototype._merchantNPCWrapped = true;
+  }
   game.socket.on(`module.${MODULE_ID}`, async message => {
     if (message?.kind === "purchase-result" && message.userId === game.user.id) {
       const resolve = pendingPurchases.get(message.requestId);
@@ -163,7 +180,7 @@ class MerchantSheet extends HandlebarsApplicationMixin(ApplicationV2) {
       stock: stock.map(item => {
         const price = item.system?.price;
         const hasPrice = price?.value !== undefined && price?.value !== null && price?.value !== "";
-        return { ...item, hasPrice, priceMissing: !hasPrice, priceText: hasPrice ? priceLabel(price) : "Price not set", denomination: price?.denomination ?? "gp" };
+        return { ...item, hasPrice, priceMissing: !hasPrice, priceText: hasPrice ? priceLabel(price) : "Price not set", denomination: price?.denomination ?? "gp", description: stripHTML(item.system?.description?.value ?? item.system?.description ?? "") };
       }),
       isGM: game.user.isGM,
       shopTypeLabel: SHOP_TYPES[this.shopType] ?? SHOP_TYPES.general,
@@ -260,16 +277,25 @@ class ItemBrowser extends HandlebarsApplicationMixin(ApplicationV2) {
   static DEFAULT_OPTIONS = {
     id: "merchant-item-browser", tag: "form", classes: ["merchant-item-browser"], window: { title: "Add Items to Shop", resizable: true }, position: { width: 1050, height: 720 },
     form: { handler: ItemBrowser.#onSubmit, submitOnChange: false },
-    actions: { applyFilters: ItemBrowser.#applyFilters, addItem: ItemBrowser.#addItem, randomItems: ItemBrowser.#randomItems, rollTable: ItemBrowser.#rollTable, done: ItemBrowser.#done }
+    actions: { addItem: ItemBrowser.#addItem, randomItems: ItemBrowser.#randomItems, rollTable: ItemBrowser.#rollTable, done: ItemBrowser.#done }
   };
   static PARTS = { form: { template: "modules/merchant-npc/templates/item-browser.hbs" } };
   _onRender(context, options) {
     super._onRender?.(context, options);
-    for (const checkbox of this.element.querySelectorAll("[name='itemSource']")) checkbox.addEventListener("change", () => {
-      this.selectedSources = new Set([...this.element.querySelectorAll("[name='itemSource']:checked")].map(input => input.value));
+    const refresh = () => {
       this.search = this.element.querySelector("[name='itemSearch']")?.value ?? "";
       this.render();
+    };
+    for (const checkbox of this.element.querySelectorAll("[name='itemType']")) checkbox.addEventListener("change", () => {
+      this.selectedTypes = new Set([...this.element.querySelectorAll("[name='itemType']:checked")].map(input => input.value));
+      refresh();
     });
+    for (const checkbox of this.element.querySelectorAll("[name='itemSource']")) checkbox.addEventListener("change", () => {
+      this.selectedSources = new Set([...this.element.querySelectorAll("[name='itemSource']:checked")].map(input => input.value));
+      refresh();
+    });
+    const search = this.element.querySelector("[name='itemSearch']");
+    if (search) search.addEventListener("change", refresh);
   }
   async #loadCatalog() {
     if (this.catalog) return this.catalog;
@@ -286,7 +312,7 @@ class ItemBrowser extends HandlebarsApplicationMixin(ApplicationV2) {
       for (const pack of game.packs.filter(candidate => candidate.documentName === "Item")) {
         await pack.getIndex({ fields: ["system.type.value", "system.armor", "system.rarity", "system.attunement", "system.properties", "system.magical", "system.identifier", "system.description.value", "system.description"] });
         const items = [...pack.index].map(entry => ({ _id: entry._id, name: entry.name, img: entry.img, type: entry.type, category: classifyItem(entry), description: stripHTML(entry.system?.description?.value ?? entry.system?.description ?? ""), source: pack.collection })).filter(item => item.category);
-        if (items.length) sources.push({ id: pack.collection, label: pack.title, items, world: false });
+        if (items.length >= 5) sources.push({ id: pack.collection, label: pack.title, items, world: false });
       }
       sources.sort((a, b) => a.label.localeCompare(b.label));
       this.catalog = sources;
@@ -298,12 +324,15 @@ class ItemBrowser extends HandlebarsApplicationMixin(ApplicationV2) {
   async _prepareContext() {
     const sources = await this.#loadCatalog();
     const typeOptions = ITEM_CATEGORIES.map(([value, label]) => ({ value, label, checked: this.selectedTypes.has(value) }));
-    const matchingSources = sources.filter(source => source.items.some(item => this.selectedTypes.has(item.category)));
-    this.selectedSources ??= new Set(matchingSources.map(source => source.id));
-    this.selectedSources = new Set([...this.selectedSources].filter(id => matchingSources.some(source => source.id === id)));
+    const matchingSources = sources.filter(source => {
+      const matchingCount = source.items.filter(item => this.selectedTypes.has(item.category)).length;
+      return source.world ? matchingCount > 0 : matchingCount >= 5;
+    });
+    if (this.selectedSources === null && this.selectedTypes.size) this.selectedSources = new Set(matchingSources.map(source => source.id));
+    if (this.selectedSources) this.selectedSources = new Set([...this.selectedSources].filter(id => sources.some(source => source.id === id)));
     const sourceOptions = matchingSources.map(source => ({ id: source.id, label: source.label, count: source.items.filter(item => this.selectedTypes.has(item.category)).length, checked: this.selectedSources.has(source.id) }));
     const query = this.search.trim().toLowerCase();
-    this.visibleItems = matchingSources.filter(source => this.selectedSources.has(source.id)).flatMap(source => source.items
+    this.visibleItems = matchingSources.filter(source => this.selectedSources?.has(source.id)).flatMap(source => source.items
       .filter(item => this.selectedTypes.has(item.category) && (!query || item.name.toLowerCase().includes(query)))
       .map(item => ({ ...item, typeLabel: ITEM_CATEGORIES.find(([value]) => value === item.category)?.[1] ?? item.type, sourceLabel: sources.find(source => source.id === item.source)?.label ?? item.source })))
       .sort((a, b) => a.name.localeCompare(b.name));
@@ -311,12 +340,6 @@ class ItemBrowser extends HandlebarsApplicationMixin(ApplicationV2) {
     return { actor: this.actor, types: typeOptions, sources: sourceOptions, items: this.visibleItems, tables, search: this.search, randomCount: game.settings.get(MODULE_ID, "randomCount"), isGM: game.user.isGM };
   }
   static async #onSubmit() {}
-  static async #applyFilters() {
-    this.selectedTypes = new Set([...this.element.querySelectorAll("[name='itemType']:checked")].map(input => input.value));
-    this.selectedSources = new Set([...this.element.querySelectorAll("[name='itemSource']:checked")].map(input => input.value));
-    this.search = this.element.querySelector("[name='itemSearch']")?.value ?? "";
-    this.render();
-  }
   async #resolveItem(sourceId, itemId) {
     if (sourceId === "world-items") return game.items.get(itemId);
     return game.packs.get(sourceId)?.getDocument(itemId);

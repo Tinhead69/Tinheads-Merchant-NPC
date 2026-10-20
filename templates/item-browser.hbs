@@ -6,7 +6,6 @@
         {{#each types as |type|}}<label><input type="checkbox" name="itemType" value="{{type.value}}" {{#if type.checked}}checked{{/if}}><span>{{type.label}}</span></label>{{else}}<p class="empty">No item types found.</p>{{/each}}
       </div>
     </section>
-    <button type="button" class="apply-filters" data-action="applyFilters">Apply Filters</button>
     <section class="filter-pane source-pane">
       <h3>Compendiums &amp; World Items</h3>
       <div class="filter-list">
@@ -27,7 +26,7 @@
     </section>
 
     <section class="available-items">
-      <div class="available-heading"><h3>Available Items <span>{{items.length}}</span></h3><label>Search<input name="itemSearch" type="search" value="{{search}}" placeholder="Search item names"></label><button type="button" data-action="applyFilters">Apply</button></div>
+      <div class="available-heading"><h3>Available Items <span>{{items.length}}</span></h3><label>Search<input name="itemSearch" type="search" value="{{search}}" placeholder="Search item names"></label></div>
       <div class="random-controls"><strong>Random stock</strong><label>Number of items<input name="randomCount" type="number" min="1" max="100" value="{{randomCount}}"></label><button type="button" data-action="randomItems">Add Random Items</button></div>
       <ul class="available-item-list">
         {{#each items as |item|}}
