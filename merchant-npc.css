@@ -1,0 +1,19 @@
+.merchant-npc .window-content { padding: 0; }
+.merchant-npc .merchant-layout { display: flex; flex-direction: column; height: 100%; gap: .6rem; padding: .8rem; overflow: auto; }
+.merchant-npc .merchant-heading { display: flex; align-items: center; gap: .8rem; border-bottom: 1px solid var(--color-border-light-2); padding-bottom: .5rem; }
+.merchant-npc .merchant-heading img { width: 56px; height: 56px; object-fit: cover; border: 0; border-radius: 4px; }
+.merchant-npc .merchant-heading h2, .merchant-npc .merchant-heading p { margin: 0; }
+.merchant-npc .merchant-controls { display: grid; gap: .5rem; }
+.merchant-npc .merchant-add, .merchant-npc .merchant-buy-select { display: flex; align-items: end; gap: .5rem; }
+.merchant-npc label { display: flex; flex-direction: column; gap: .2rem; flex: 1; }
+.merchant-npc select { min-height: 2rem; }
+.merchant-npc .hint, .merchant-npc .merchant-packs { margin: 0; font-size: .85em; }
+.merchant-npc .merchant-packs { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; }
+.merchant-npc .merchant-stock { list-style: none; margin: 0; padding: 0; display: grid; gap: .35rem; }
+.merchant-npc .merchant-item { display: flex; align-items: center; gap: .5rem; border-bottom: 1px solid var(--color-border-light-2); padding: .35rem 0; }
+.merchant-npc .merchant-item img { width: 36px; height: 36px; object-fit: cover; border: 0; }
+.merchant-npc .merchant-item-name { display: flex; flex: 1; flex-direction: column; }
+.merchant-npc .merchant-item-name small { opacity: .75; }
+.merchant-npc .merchant-price { min-width: 5rem; text-align: right; }
+.merchant-npc .icon-button { width: 2rem; }
+.merchant-open { margin: 0 .35rem; }

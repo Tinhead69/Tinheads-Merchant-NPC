@@ -5,7 +5,7 @@
   "version": "0.1.0",
   "url": "https://github.com/Tinhead69/Tinheads-Merchant-NPC",
   "manifest": "https://raw.githubusercontent.com/Tinhead69/Tinheads-Merchant-NPC/main/module.json",
-  "download": "https://github.com/Tinhead69/Tinheads-Merchant-NPC/releases/download/v0.1.0/Tinheads-Merchant-NPC.zip",
+  "download": "https://github.com/Tinhead69/Tinheads-Merchant-NPC/releases/download/v0.1.0/merchant-npc-0.1.0.zip",
   "bugs": "https://github.com/Tinhead69/Tinheads-Merchant-NPC/issues",
   "compatibility": { "minimum": "13", "verified": "13.351" },
   "authors": [{ "name": "Martin Zealey" }],
