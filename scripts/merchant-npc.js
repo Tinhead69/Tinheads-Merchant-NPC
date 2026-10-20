@@ -14,19 +14,23 @@ Hooks.once("ready", () => {
       callback: (li) => game.merchantNPC.open(game.actors.get(li.data("documentId")))
     });
   });
-  Hooks.on("renderActorSheet", (app, html) => {
+  const addMerchantButton = (app, html) => {
     const actor = app.actor ?? app.document;
     if (actor?.type !== "npc") return;
     const root = html instanceof HTMLElement ? html : html?.[0];
     const header = root?.querySelector(".window-header");
     if (!header || header.querySelector(".merchant-open")) return;
     const button = document.createElement("a");
-    button.className = "merchant-open";
+    button.className = "header-control merchant-open";
     button.innerHTML = '<i class="fas fa-store"></i> Shop';
     button.title = "Open merchant shop";
     button.addEventListener("click", (event) => { event.preventDefault(); game.merchantNPC.open(actor); });
-    header.insertBefore(button, header.querySelector(".header-control"));
-  });
+    header.insertBefore(button, header.querySelector(".window-controls") ?? null);
+  };
+  // D&D 5e on Foundry v13 renders ActorSheetV2, which dispatches this V2 hook.
+  Hooks.on("renderActorSheetV2", addMerchantButton);
+  // Keep support for systems or sheet modules still using the legacy ActorSheet.
+  Hooks.on("renderActorSheet", addMerchantButton);
 });
 
 const { ApplicationV2, HandlebarsApplicationMixin } = foundry.applications.api;

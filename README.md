@@ -6,9 +6,9 @@ An installable Foundry VTT module for Foundry 13.351 and D&D 5e 5.0.0.
 
 Repository: [Tinhead69/Tinheads-Merchant-NPC](https://github.com/Tinhead69/Tinheads-Merchant-NPC)  
 Foundry manifest URL: `https://raw.githubusercontent.com/Tinhead69/Tinheads-Merchant-NPC/main/module.json`  
-Release download URL: `https://github.com/Tinhead69/Tinheads-Merchant-NPC/releases/download/v0.1.0/merchant-npc-0.1.0.zip`
+Release download URL: `https://github.com/Tinhead69/Tinheads-Merchant-NPC/releases/download/v0.1.1/merchant-npc-0.1.1.zip`
 
-In Foundry's **Install Module** screen, paste the manifest URL. For each release, create a GitHub release whose tag matches the version (for example, `v0.1.0`) and attach the ZIP with the exact filename shown in `module.json`'s `download` field. Update the version and download URL in `module.json` for subsequent releases.
+In Foundry's **Install Module** screen, paste the manifest URL. For each release, create a GitHub release whose tag matches the version (for example, `v0.1.1`) and attach the ZIP with the exact filename shown in the release download URL above. Update the version and download URL in `module.json` for subsequent releases.
 
 ## Install
 
