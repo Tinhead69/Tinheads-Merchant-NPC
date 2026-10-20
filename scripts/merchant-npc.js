@@ -11,21 +11,27 @@ const pendingPurchases = new Map();
 function priceLabel(price = {}) { return `${price.value ?? price.amount ?? 0} ${price.denomination ?? price.currency ?? "gp"}`; }
 function isItemDocument(document) { return document?.documentName === "Item"; }
 function isConfiguredShop(actor) { return Boolean(actor?.type === "npc" && (actor.getFlag(MODULE_ID, "isShop") || (actor.getFlag(MODULE_ID, "stock") ?? []).length)); }
+function getConfiguredShopActor(token) {
+  const tokenActor = token?.actor;
+  if (isConfiguredShop(tokenActor)) return tokenActor;
+  const baseActor = token?.document?.actorId ? game.actors.get(token.document.actorId) : null;
+  return isConfiguredShop(baseActor) ? baseActor : tokenActor;
+}
 function stripHTML(value = "") { const template = document.createElement("template"); template.innerHTML = String(value); return (template.content.textContent ?? "").trim(); }
 function classifyItem(item) {
+  if (item.type === "spell") return null;
   const system = item.system ?? {};
   const subtype = String(system.type?.value ?? system.type ?? system.consumableType ?? "").toLowerCase();
   const properties = system.properties instanceof Set ? [...system.properties] : Array.isArray(system.properties) ? system.properties : Object.entries(system.properties ?? {}).filter(([, value]) => Boolean(value)).map(([key]) => key);
-  const rarity = String(system.rarity?.value ?? system.rarity ?? "").toLowerCase();
-  const attunement = String(system.attunement?.value ?? system.attunement ?? "").toLowerCase();
-  const magical = Boolean(system.magical || (rarity && !["none", "mundane"].includes(rarity)) || (attunement && attunement !== "none") || properties.some(value => String(value).toLowerCase() === "mgc"));
-  const armour = item.type === "equipment" && Boolean(system.armor || ["light", "medium", "heavy", "shield"].includes(subtype));
+  const magical = system.magical === true || String(system.magical).toLowerCase() === "magical" || properties.some(value => ["magical", "mgc"].includes(String(value).toLowerCase()));
+  const isWeapon = item.type === "weapon" || (item.type === "equipment" && /melee|ranged/.test(subtype));
+  const armour = item.type === "equipment" && Boolean(system.armor || /armou?r/.test(subtype) || ["light", "medium", "heavy", "shield"].includes(subtype));
   const potion = item.type === "consumable" && (subtype.includes("potion") || String(system.identifier ?? "").toLowerCase().includes("potion"));
   // Specific physical categories take priority over magical status.
-  if (item.type === "weapon") return "weapons";
+  if (isWeapon) return "weapons";
   if (armour) return "armour";
   if (potion) return "potions";
-  if (magical) return "magic";
+  if (item.type === "equipment" && magical) return "magic";
   if (["equipment", "tool", "loot", "container"].includes(item.type)) return "equipment";
   return null;
 }
@@ -36,8 +42,17 @@ Hooks.once("init", () => {
 
 Hooks.once("ready", () => {
   game.merchantNPC = { open: async (actor) => {
-    if (game.user.isGM) await actor.setFlag(MODULE_ID, "isShop", true);
-    return new MerchantSheet(actor).render(true);
+    if (!actor) return ui.notifications.warn("Merchant NPC could not be found.");
+    try {
+      if (game.user.isGM) await actor.setFlag(MODULE_ID, "isShop", true);
+      const sheet = new MerchantSheet(actor);
+      await sheet.render(true);
+      return sheet;
+    } catch (error) {
+      console.error(`${MODULE_ID} | Could not open merchant shop`, { actor: actor?.name, error });
+      ui.notifications.error(`Could not open ${actor.name}'s shop. Check the browser console for Merchant NPC details.`);
+      return null;
+    }
   } };
   // Override the documented Token double-left-click handler so shop access does not
   // depend on Foundry first allowing the player to open the NPC's actor sheet.
@@ -45,7 +60,7 @@ Hooks.once("ready", () => {
   if (TokenClass?.prototype?._onClickLeft2 && !TokenClass.prototype._merchantNPCWrapped) {
     const originalDoubleClick = TokenClass.prototype._onClickLeft2;
     TokenClass.prototype._onClickLeft2 = function(event, ...args) {
-      const actor = this.actor;
+      const actor = getConfiguredShopActor(this);
       const canViewActor = actor?.testUserPermission(game.user, CONST.DOCUMENT_OWNERSHIP_LEVELS.OBSERVER);
       if (!game.user.isGM && isConfiguredShop(actor) && !canViewActor) {
         event?.stopPropagation?.();
@@ -89,7 +104,7 @@ Hooks.once("ready", () => {
   });
   // Token HUD gives players without actor-sheet permission a reliable canvas entry point.
   Hooks.on("renderTokenHUD", (hud, html) => {
-    const actor = hud.object?.actor ?? hud.document?.actor;
+    const actor = getConfiguredShopActor(hud.object ?? hud.document);
     const root = html instanceof HTMLElement ? html : html?.[0];
     if (!root || !isConfiguredShop(actor) || game.user.isGM || actor.testUserPermission(game.user, CONST.DOCUMENT_OWNERSHIP_LEVELS.OBSERVER) || root.querySelector(".merchant-token-shop")) return;
     const button = document.createElement("div");
@@ -174,13 +189,14 @@ class MerchantSheet extends HandlebarsApplicationMixin(ApplicationV2) {
   static PARTS = { form: { template: "modules/merchant-npc/templates/merchant-sheet.hbs" } };
   get title() { return `${this.actor.name} — ${SHOP_TYPES[this.shopType] ?? SHOP_TYPES.general}`; }
   async _prepareContext() {
+    this.shopType = this.actor.getFlag(MODULE_ID, "shopType") ?? this.shopType ?? "general";
     const stock = this.actor.getFlag(MODULE_ID, "stock") ?? [];
     return {
       actor: this.actor,
       stock: stock.map(item => {
         const price = item.system?.price;
         const hasPrice = price?.value !== undefined && price?.value !== null && price?.value !== "";
-        return { ...item, hasPrice, priceMissing: !hasPrice, priceText: hasPrice ? priceLabel(price) : "Price not set", denomination: price?.denomination ?? "gp", description: stripHTML(item.system?.description?.value ?? item.system?.description ?? "") };
+        return { ...item, hasPrice, priceMissing: !hasPrice, priceZero: hasPrice && Number(price.value) === 0, priceText: hasPrice ? priceLabel(price) : "Price not set", denomination: price?.denomination ?? "gp", description: stripHTML(item.system?.description?.value ?? item.system?.description ?? "") };
       }),
       isGM: game.user.isGM,
       shopTypeLabel: SHOP_TYPES[this.shopType] ?? SHOP_TYPES.general,
@@ -227,6 +243,7 @@ class MerchantSheet extends HandlebarsApplicationMixin(ApplicationV2) {
   }
   static async #setFloat() {
     if (!game.user.isGM) return ui.notifications.error("Only the GM can set a merchant's starting float.");
+    this.shopType = this.actor.getFlag(MODULE_ID, "shopType") ?? "general";
     const preset = this.element.querySelector("[name='floatPreset']")?.value;
     const custom = Number(this.element.querySelector("[name='floatAmount']")?.value);
     const gp = preset === "custom" ? custom : Number(preset);
@@ -240,9 +257,9 @@ class MerchantSheet extends HandlebarsApplicationMixin(ApplicationV2) {
   }
   static async #setShopType() {
     const type = this.element.querySelector("[name='shopType']")?.value ?? "general";
-    await this.actor.setFlag(MODULE_ID, "shopType", SHOP_TYPES[type] ? type : "general");
+    this.shopType = SHOP_TYPES[type] ? type : "general";
+    await this.actor.setFlag(MODULE_ID, "shopType", this.shopType);
     await this.actor.setFlag(MODULE_ID, "isShop", true);
-    this.shopType = type;
     this.render();
   }
   static async #buy(_event, target) {
@@ -300,11 +317,14 @@ class ItemBrowser extends HandlebarsApplicationMixin(ApplicationV2) {
   async #loadCatalog() {
     if (this.catalog) return this.catalog;
     if (this.catalogPromise) return this.catalogPromise;
-    const loadingDialog = document.createElement("dialog");
-    loadingDialog.className = "merchant-loading-dialog";
-    loadingDialog.textContent = "Compendiums loading, please wait";
-    document.body.append(loadingDialog);
-    try { loadingDialog.showModal(); } catch { loadingDialog.setAttribute("open", ""); }
+    let loadingDialog = null;
+    const loadingTimer = window.setTimeout(() => {
+      loadingDialog = document.createElement("dialog");
+      loadingDialog.className = "merchant-loading-dialog";
+      loadingDialog.textContent = "Compendiums Loading - Please Wait";
+      document.body.append(loadingDialog);
+      try { loadingDialog.showModal(); } catch { loadingDialog.setAttribute("open", ""); }
+    }, 3000);
     this.catalogPromise = (async () => {
       const sources = [];
       const worldItems = game.items.contents.map(item => ({ _id: item.id, name: item.name, img: item.img, type: item.type, category: classifyItem(item), description: stripHTML(item.system?.description?.value ?? item.system?.description ?? ""), source: "world-items" })).filter(item => item.category);
@@ -319,7 +339,12 @@ class ItemBrowser extends HandlebarsApplicationMixin(ApplicationV2) {
       return sources;
     })();
     try { return await this.catalogPromise; }
-    finally { if (loadingDialog.open) loadingDialog.close(); loadingDialog.remove(); this.catalogPromise = null; }
+    finally {
+      window.clearTimeout(loadingTimer);
+      if (loadingDialog?.open) loadingDialog.close();
+      loadingDialog?.remove();
+      this.catalogPromise = null;
+    }
   }
   async _prepareContext() {
     const sources = await this.#loadCatalog();

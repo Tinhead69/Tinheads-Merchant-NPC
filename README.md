@@ -6,9 +6,9 @@ An installable Foundry VTT module for Foundry 13.351 and D&D 5e 5.0.0.
 
 Repository: [Tinhead69/Tinheads-Merchant-NPC](https://github.com/Tinhead69/Tinheads-Merchant-NPC)  
 Foundry manifest URL: `https://raw.githubusercontent.com/Tinhead69/Tinheads-Merchant-NPC/main/module.json`  
-Release download URL: `https://github.com/Tinhead69/Tinheads-Merchant-NPC/releases/download/v0.1.11/merchant-npc-0.1.11.zip`
+Release download URL: `https://github.com/Tinhead69/Tinheads-Merchant-NPC/releases/download/v0.1.12/merchant-npc-0.1.12.zip`
 
-In Foundry's **Install Module** screen, paste the manifest URL. For each release, create a GitHub release whose tag matches the version (for example, `v0.1.11`) and attach the ZIP with the exact filename shown in the release download URL above. Update the version and download URL in `module.json` for subsequent releases.
+In Foundry's **Install Module** screen, paste the manifest URL. For each release, create a GitHub release whose tag matches the version (for example, `v0.1.12`) and attach the ZIP with the exact filename shown in the release download URL above. Update the version and download URL in `module.json` for subsequent releases.
 
 ## Install
 
@@ -19,7 +19,7 @@ Copy the `merchant-npc` folder into your Foundry `Data/modules` directory, then 
 - Double-click a configured NPC in the Actors directory or its canvas token to open the shop. Players without observer-level permission can also right-click its canvas token and click the shop icon in the Token HUD. Players with observer permission can view the NPC sheet and open the shop from its header or directory context menu.
 - GMs can set the shop type on the merchant sheet. Jewellers receive ten-times-higher float presets.
 - GMs can use the three-pane **Add Items** browser to dynamically filter by item type and source, add individual items, randomly add items from selected sources, or roll world and compendium Rollable Tables with linked items in the selected categories. Item descriptions appear on hover in both the browser and shop inventory. Item compendiums with fewer than five supported items are hidden.
-- Add Items starts with all category checkboxes off. Its categories are Potions, Weapons, Armour, Magic Items, and Normal Equipment; magical weapons and armour stay in their physical category.
+- Add Items starts with all category checkboxes off. Its categories are Potions, Weapons, Armour, Magic Items, and Normal Equipment; spells are excluded, and magical equipment is listed as Magic Items only when marked magical. Magical weapons and armour stay in their physical category.
 - The merchant sheet shows the full shop inventory. GMs can edit stock quantities and prices, remove items, and set a starting purse. Repeated additions and repeated Rollable Table results are allowed and increase the stock quantity. Item prices and denominations are copied from the source item, and the GM is alerted when a listed item has no price.
 - GMs can set the merchant's purse to a custom amount in gp, or use Poor (200 gp), Average (500 gp), and Rich (1,000 gp) starting-float presets. Jewellers use ten times those preset values.
 - Set each item's price in its D&D 5e item data before listing it. Stock quantity is tracked by the shop; a purchase sells one unit.

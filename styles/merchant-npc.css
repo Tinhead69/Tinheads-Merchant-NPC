@@ -23,12 +23,13 @@
 .merchant-npc .merchant-item-qty { min-width: 4rem; text-align: center; }
 .merchant-npc .merchant-price { min-width: 5rem; text-align: right; }
 .merchant-npc .stock-field { max-width: none; min-width: 0; font-size: .8em; flex: initial; }
-.merchant-npc .quantity-field { width: 8rem; }
-.merchant-npc .price-field { width: 11rem; }
+.merchant-npc .quantity-field { width: 4rem; }
+.merchant-npc .price-field { width: 5.5rem; }
 .merchant-npc .stock-field input { width: 100%; }
 .merchant-npc .price-input { display: flex; align-items: center; gap: .35rem; }
 .merchant-npc .price-input input { min-width: 0; flex: 1; }
 .merchant-npc .price-input > span { min-width: 1.5rem; text-align: center; font-weight: 600; }
+.merchant-npc .price-input input.price-zero { background-color: #fff2a8; border-color: #c99a00; color: #3b2a00; }
 .merchant-npc .missing-price { color: var(--color-level-error); font-size: .85em; font-weight: 700; }
 .merchant-npc .purchase-button { min-width: 6rem; }
 .merchant-npc .icon-button { width: 2rem; }
