@@ -9,7 +9,6 @@
   "bugs": "https://github.com/Tinhead69/Tinheads-Merchant-NPC/issues",
   "compatibility": { "minimum": "13", "verified": "13.351" },
   "authors": [{ "name": "Martin Zealey" }],
-  "systems": ["dnd5e"],
   "relationships": {
     "systems": [{ "id": "dnd5e", "type": "system", "compatibility": { "minimum": "5.0.0" } }]
   },
