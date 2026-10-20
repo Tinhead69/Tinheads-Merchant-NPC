@@ -54,23 +54,37 @@ Hooks.once("ready", () => {
       return null;
     }
   } };
-  // Override the documented Token double-left-click handler so shop access does not
-  // depend on Foundry first allowing the player to open the NPC's actor sheet.
-  const TokenClass = CONFIG.Token.objectClass;
-  if (TokenClass?.prototype?._onClickLeft2 && !TokenClass.prototype._merchantNPCWrapped) {
-    const originalDoubleClick = TokenClass.prototype._onClickLeft2;
-    TokenClass.prototype._onClickLeft2 = function(event, ...args) {
-      const actor = getConfiguredShopActor(this);
+  // In v13 the normal canvas double-click is handled by TokenLayer, not Token.
+  // Resolve the placeable from the PIXI event target's parent chain and intercept
+  // only configured shops the player cannot open as character sheets.
+  const installTokenDoubleClick = () => {
+    const tokenLayerPrototype = canvas.tokens?.constructor?.prototype;
+    if (!tokenLayerPrototype?._onClickLeft2 || tokenLayerPrototype._merchantNPCWrapped) return;
+    const originalDoubleClick = tokenLayerPrototype._onClickLeft2;
+    tokenLayerPrototype._onClickLeft2 = function(event, ...args) {
+      let target = event?.target ?? event?.currentTarget;
+      let token = null;
+      while (target) {
+        if (target.document?.documentName === "Token" || target.document?.actorId) {
+          token = target;
+          break;
+        }
+        target = target.parent;
+      }
+      const actor = getConfiguredShopActor(token);
       const canViewActor = actor?.testUserPermission(game.user, CONST.DOCUMENT_OWNERSHIP_LEVELS.OBSERVER);
       if (!game.user.isGM && isConfiguredShop(actor) && !canViewActor) {
         event?.stopPropagation?.();
-        game.merchantNPC.open(actor);
+        void game.merchantNPC.open(actor);
         return;
       }
       return originalDoubleClick.call(this, event, ...args);
     };
-    TokenClass.prototype._merchantNPCWrapped = true;
-  }
+    tokenLayerPrototype._merchantNPCWrapped = true;
+    console.info(`${MODULE_ID} | TokenLayer shop double-click handler installed.`);
+  };
+  Hooks.on("canvasReady", installTokenDoubleClick);
+  installTokenDoubleClick();
   game.socket.on(`module.${MODULE_ID}`, async message => {
     if (message?.kind === "purchase-result" && message.userId === game.user.id) {
       const resolve = pendingPurchases.get(message.requestId);
