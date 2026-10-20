@@ -1,34 +1,14 @@
 const MODULE_ID = "merchant-npc";
 const CURRENCY = { pp: 1000, gp: 100, ep: 50, sp: 10, cp: 1 };
-const FLOAT_PRESETS = [ ["poor", "Poor", 200], ["average", "Average", 500], ["rich", "Rich", 1000] ];
-const SHOP_TYPES = {
-  general: "General Goods", equipment: "Equipment", weapons: "Weapons",
-  armour: "Armour", potions: "Potions", magic: "Magic Items", jeweller: "Jeweller"
-};
+const FLOAT_PRESETS = [["Poor", 200], ["Average", 500], ["Rich", 1000]];
+const SHOP_TYPES = { general: "General Goods", equipment: "Equipment", weapons: "Weapons", armour: "Armour", potions: "Potions", magic: "Magic Items", jeweller: "Jeweller" };
+const ITEM_TYPE_LABELS = { weapon: "Weapons", equipment: "Equipment", consumable: "Consumables", tool: "Tools", loot: "Loot", spell: "Spells", container: "Containers", feat: "Features", class: "Classes", subclass: "Subclasses", background: "Backgrounds", race: "Races", species: "Species" };
 
-function itemMatchesShop(item, shopType) {
-  const system = item.system ?? {};
-  const subtype = String(system.type?.value ?? system.type ?? system.consumableType ?? "").toLowerCase();
-  if (shopType === "general") return true;
-  if (shopType === "equipment") return ["equipment", "tool"].includes(item.type);
-  if (shopType === "weapons") return item.type === "weapon";
-  if (shopType === "armour") return item.type === "equipment" && Boolean(system.armor || ["light", "medium", "heavy", "shield"].includes(subtype));
-  if (shopType === "potions") return item.type === "consumable" && (subtype.includes("potion") || String(system.identifier ?? "").toLowerCase().includes("potion"));
-  if (shopType === "jeweller") {
-    const jewelryText = `${item.name ?? ""} ${subtype} ${system.identifier ?? ""}`.toLowerCase();
-    return item.type === "loot" || item.type === "equipment" && /jewel|jewelry|jewellery|gem|ring|necklace|amulet|crown|brooch/.test(jewelryText);
-  }
-  if (shopType === "magic") {
-    const rarity = String(system.rarity?.value ?? system.rarity ?? "").toLowerCase();
-    const attunement = String(system.attunement?.value ?? system.attunement ?? "").toLowerCase();
-    const properties = system.properties instanceof Set ? [...system.properties] : Array.isArray(system.properties) ? system.properties : Object.keys(system.properties ?? {});
-    return Boolean(rarity && !["none", "mundane"].includes(rarity)) || Boolean(attunement && attunement !== "none") || properties.some(p => String(p).toLowerCase() === "mgc");
-  }
-  return true;
-}
+function priceLabel(price = {}) { return `${price.value ?? price.amount ?? 0} ${price.denomination ?? price.currency ?? "gp"}`; }
+function isItemDocument(document) { return document?.documentName === "Item"; }
 
 Hooks.once("init", () => {
-  game.settings.register(MODULE_ID, "randomCount", { name: "Random stock count", hint: "Number of items added when generating stock.", scope: "world", config: true, type: Number, default: 10, range: { min: 1, max: 100, step: 1 } });
+  game.settings.register(MODULE_ID, "randomCount", { name: "Random stock count", hint: "Default number of items added by random compendium generation.", scope: "world", config: true, type: Number, default: 10, range: { min: 1, max: 100, step: 1 } });
 });
 
 Hooks.once("ready", () => {
@@ -39,16 +19,13 @@ Hooks.once("ready", () => {
       rejectClose: false,
       ok: { label: "Open Shop", callback: (_event, button) => button.form.elements.shopType.value }
     });
-    if (!type) return;
-    new MerchantSheet(actor, { shopType: type }).render(true);
+    if (type) new MerchantSheet(actor, { shopType: type }).render(true);
   } };
-  Hooks.on("getActorDirectoryEntryContext", (_html, entries) => {
-    entries.push({
-      name: "Open Merchant Shop", icon: '<i class="fas fa-store"></i>',
-      condition: (li) => game.actors.get(li.data("documentId"))?.type === "npc",
-      callback: (li) => game.merchantNPC.open(game.actors.get(li.data("documentId")))
-    });
-  });
+  Hooks.on("getActorDirectoryEntryContext", (_html, entries) => entries.push({
+    name: "Open Merchant Shop", icon: '<i class="fas fa-store"></i>',
+    condition: (li) => game.actors.get(li.data("documentId"))?.type === "npc",
+    callback: (li) => game.merchantNPC.open(game.actors.get(li.data("documentId")))
+  }));
   const addMerchantButton = (app, html) => {
     const actor = app.actor ?? app.document;
     if (actor?.type !== "npc") return;
@@ -62,79 +39,70 @@ Hooks.once("ready", () => {
     button.addEventListener("click", (event) => { event.preventDefault(); game.merchantNPC.open(actor); });
     header.insertBefore(button, header.querySelector(".window-controls") ?? null);
   };
-  // D&D 5e on Foundry v13 renders ActorSheetV2, which dispatches this V2 hook.
   Hooks.on("renderActorSheetV2", addMerchantButton);
-  // Keep support for systems or sheet modules still using the legacy ActorSheet.
   Hooks.on("renderActorSheet", addMerchantButton);
 });
 
 const { ApplicationV2, HandlebarsApplicationMixin } = foundry.applications.api;
+
 class MerchantSheet extends HandlebarsApplicationMixin(ApplicationV2) {
-  constructor(actor, options = {}) { super({ ...options, id: `merchant-npc-${actor.id}` }); this.actor = actor; this.shopType = options.shopType ?? "general"; }
+  constructor(actor, options = {}) {
+    super({ ...options, id: `merchant-npc-${actor.id}` });
+    this.actor = actor;
+    this.shopType = options.shopType ?? "general";
+  }
   static DEFAULT_OPTIONS = {
-    id: "merchant-npc-{id}", tag: "form", classes: ["merchant-npc"], window: { title: "Merchant Shop", resizable: true },
-    position: { width: 650, height: 650 }, form: { handler: MerchantSheet.#onSubmit, submitOnChange: false },
-    actions: { addWorldItem: MerchantSheet.#addWorldItem, removeItem: MerchantSheet.#removeItem, buy: MerchantSheet.#buy, generate: MerchantSheet.#generate, setFloat: MerchantSheet.#setFloat, refresh: MerchantSheet.#refresh }
+    id: "merchant-npc", tag: "form", classes: ["merchant-npc"], window: { title: "Merchant Shop", resizable: true }, position: { width: 760, height: 720 },
+    form: { handler: MerchantSheet.#onSubmit, submitOnChange: false },
+    actions: { addItems: MerchantSheet.#addItems, removeItem: MerchantSheet.#removeItem, saveItem: MerchantSheet.#saveItem, buy: MerchantSheet.#buy, setFloat: MerchantSheet.#setFloat }
   };
   static PARTS = { form: { template: "modules/merchant-npc/templates/merchant-sheet.hbs" } };
   get title() { return `${this.actor.name} — ${SHOP_TYPES[this.shopType] ?? SHOP_TYPES.general}`; }
   async _prepareContext() {
-    const stock = (this.actor.getFlag(MODULE_ID, "stock") ?? []).filter(item => itemMatchesShop(item, this.shopType)).map(item => {
-      const price = item.system?.price ?? {};
-      return { ...item, priceText: `${price.value ?? price.amount ?? 0} ${price.denomination ?? price.currency ?? "gp"}` };
-    });
-    const packs = [];
-    for (const pack of game.packs.filter(p => p.documentName === "Item")) {
-      await pack.getIndex();
-      if (pack.index.size) packs.push({ collection: pack.collection, label: pack.title, count: pack.index.size });
-    }
-    packs.sort((a, b) => a.label.localeCompare(b.label));
-    return { actor: this.actor, stock, isGM: game.user.isGM,
-      packs, shopType: this.shopType, shopTypeLabel: SHOP_TYPES[this.shopType] ?? SHOP_TYPES.general,
-      buyers: game.actors.filter(a => a.type === "character" && (game.user.isGM || a.isOwner)), worldItems: game.items.contents.filter(item => itemMatchesShop(item, this.shopType)),
-      randomCount: game.settings.get(MODULE_ID, "randomCount"),
-      floatPresets: FLOAT_PRESETS.map(([key, label, amount]) => {
+    const stock = this.actor.getFlag(MODULE_ID, "stock") ?? [];
+    return {
+      actor: this.actor,
+      stock: stock.map(item => ({ ...item, priceText: priceLabel(item.system?.price) })),
+      isGM: game.user.isGM,
+      shopTypeLabel: SHOP_TYPES[this.shopType] ?? SHOP_TYPES.general,
+      buyers: game.actors.filter(actor => actor.type === "character" && (game.user.isGM || actor.isOwner)),
+      funds: this.#funds(),
+      floatPresets: FLOAT_PRESETS.map(([name, amount]) => {
         const value = amount * (this.shopType === "jeweller" ? 10 : 1);
-        return { value, label: `${label} · ${value.toLocaleString()} gp` };
+        return { value, label: `${name} · ${value.toLocaleString()} gp` };
       }),
-      floatHint: this.shopType === "jeweller" ? "Jeweller presets are 10× the normal NPC float." : "Choose a starting purse in gold pieces.",
-      funds: this.#funds() };
+      floatHint: this.shopType === "jeweller" ? "Jeweller float presets are ten times the normal NPC amounts." : "Choose a starting purse in gold pieces."
+    };
   }
-  #funds() { const c = this.actor.system.currency ?? {}; return Object.entries(CURRENCY).map(([k, v]) => `${k}: ${Number(c[k] ?? 0)}`).join(" · "); }
-  static async #onSubmit(event, form, formData) { /* No implicit actor edits; handlers perform explicit actions. */ }
-  static async #refresh(_event, _target) { this.render(); }
-  static async #addWorldItem(_event, _target) {
-    const itemId = this.element.querySelector("[name='worldItem']")?.value;
-    const item = game.items.get(itemId); if (item) await this.#addStock(item.toObject());
-  }
-  async #addStock(source, quantity = 1) {
-    if (!itemMatchesShop(source, this.shopType)) return ui.notifications.warn(`That item does not match the ${SHOP_TYPES[this.shopType]} shop type.`);
+  #funds() { const c = this.actor.system.currency ?? {}; return Object.entries(CURRENCY).map(([k]) => `${k}: ${Number(c[k] ?? 0)}`).join(" · "); }
+  static async #onSubmit() {}
+  static async #addItems() { new ItemBrowser(this.actor, this).render(true); }
+  async addStock(source, quantity = 1) {
     const stock = foundry.utils.deepClone(this.actor.getFlag(MODULE_ID, "stock") ?? []);
-    const existing = stock.find(entry => entry.sourceUuid === source._stats?.compendiumSource || entry.name === source.name);
-    if (existing) existing.quantity = Number(existing.quantity || 0) + quantity;
-    else stock.push({ id: foundry.utils.randomID(), name: source.name, img: source.img, type: source.type, system: source.system ?? {}, sourceUuid: source._stats?.compendiumSource ?? "", quantity });
-    await this.actor.setFlag(MODULE_ID, "stock", stock); this.render();
+    const sourceUuid = source._stats?.compendiumSource ?? source.uuid ?? "";
+    const existing = stock.find(item => sourceUuid && item.sourceUuid === sourceUuid);
+    if (existing) existing.quantity = Number(existing.quantity ?? 0) + quantity;
+    else stock.push({ id: foundry.utils.randomID(), name: source.name, img: source.img ?? "icons/svg/item-bag.svg", type: source.type, system: foundry.utils.deepClone(source.system ?? {}), sourceUuid, quantity });
+    await this.actor.setFlag(MODULE_ID, "stock", stock);
+    this.render();
   }
   static async #removeItem(_event, target) {
-    const id = target.dataset.id; const stock = (this.actor.getFlag(MODULE_ID, "stock") ?? []).filter(x => x.id !== id);
-    await this.actor.setFlag(MODULE_ID, "stock", stock); this.render();
+    const stock = (this.actor.getFlag(MODULE_ID, "stock") ?? []).filter(item => item.id !== target.dataset.id);
+    await this.actor.setFlag(MODULE_ID, "stock", stock);
+    this.render();
   }
-  static async #generate() {
-    const packIds = [...this.element.querySelectorAll("[name='sourcePack']:checked")].map(el => el.value);
-    const candidates = [];
-    for (const id of packIds) {
-      const pack = game.packs.get(id); if (!pack) continue;
-      await pack.getIndex();
-      for (const entry of pack.index) {
-        if (entry.type && !["weapon", "equipment", "tool", "consumable", "loot", "spell"].includes(entry.type) && this.shopType !== "general") continue;
-        const item = await pack.getDocument(entry._id);
-        if (item && itemMatchesShop(item, this.shopType)) candidates.push(item);
-      }
-    }
-    const count = Math.min(game.settings.get(MODULE_ID, "randomCount"), candidates.length);
-    for (let i = candidates.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [candidates[i], candidates[j]] = [candidates[j], candidates[i]]; }
-    for (const item of candidates.slice(0, count)) await this.#addStock(item.toObject());
-    if (!count) ui.notifications.warn("No matching items were found in the selected compendiums.");
+  static async #saveItem(_event, target) {
+    const row = target.closest("[data-stock-id]");
+    const id = row?.dataset.stockId;
+    const stock = foundry.utils.deepClone(this.actor.getFlag(MODULE_ID, "stock") ?? []);
+    const item = stock.find(entry => entry.id === id);
+    if (!item || !row) return;
+    item.quantity = Math.max(0, Number(row.querySelector("[name='quantity']")?.value ?? 0));
+    item.system.price ??= {};
+    item.system.price.value = Math.max(0, Number(row.querySelector("[name='price']")?.value ?? 0));
+    item.system.price.denomination = row.querySelector("[name='denomination']")?.value ?? "gp";
+    await this.actor.setFlag(MODULE_ID, "stock", stock);
+    this.render();
   }
   static async #setFloat() {
     if (!game.user.isGM) return ui.notifications.error("Only the GM can set a merchant's starting float.");
@@ -149,42 +117,155 @@ class MerchantSheet extends HandlebarsApplicationMixin(ApplicationV2) {
     this.render();
   }
   static async #buy(_event, target) {
-    const id = target.dataset.id, stock = foundry.utils.deepClone(this.actor.getFlag(MODULE_ID, "stock") ?? []), entry = stock.find(x => x.id === id);
-    if (!entry) return ui.notifications.warn("This item is no longer in stock.");
-    const buyerId = this.element.querySelector("[name='buyer']")?.value;
-    const buyer = game.actors.get(buyerId); if (!buyer) return ui.notifications.warn("Choose a buyer first.");
+    const stock = foundry.utils.deepClone(this.actor.getFlag(MODULE_ID, "stock") ?? []);
+    const item = stock.find(entry => entry.id === target.dataset.id);
+    if (!item) return ui.notifications.warn("This item is no longer in stock.");
+    const buyer = game.actors.get(this.element.querySelector("[name='buyer']")?.value);
+    if (!buyer) return ui.notifications.warn("Choose a buyer first.");
     if (!game.user.isGM && !buyer.isOwner) return ui.notifications.error("You can only purchase for a character you own.");
-    const price = entry.system?.price ?? {};
-    const denom = price.denomination ?? price.currency ?? "gp";
+    const price = item.system?.price ?? {};
+    const denomination = price.denomination ?? price.currency ?? "gp";
     const value = Number(price.value ?? price.amount ?? 0);
-    if (!(value > 0) || !CURRENCY[denom]) return ui.notifications.warn("Set a valid item price before selling it.");
-    const copper = Math.ceil(value * CURRENCY[denom]);
-    const buyerFunds = foundry.utils.deepClone(buyer.system.currency ?? {});
-    const total = Object.entries(CURRENCY).reduce((sum, [k, v]) => sum + Number(buyerFunds[k] ?? 0) * v, 0);
+    if (!(value > 0) || !CURRENCY[denomination]) return ui.notifications.warn("Set a valid item price before selling it.");
+    const copper = Math.ceil(value * CURRENCY[denomination]);
+    const buyerCurrency = foundry.utils.deepClone(buyer.system.currency ?? {});
+    const total = Object.entries(CURRENCY).reduce((sum, [key, factor]) => sum + Number(buyerCurrency[key] ?? 0) * factor, 0);
     if (total < copper) return ui.notifications.warn(`${buyer.name} does not have enough funds.`);
-    const remaining = total - copper;
-    // Re-denominate the exact remaining value so a buyer can pay with any mix of coins.
-    let balance = remaining;
-    for (const [k, v] of Object.entries(CURRENCY)) { buyerFunds[k] = Math.floor(balance / v); balance %= v; }
-    const merchantFunds = foundry.utils.deepClone(this.actor.system.currency ?? {});
+    let remainder = total - copper;
+    for (const [key, factor] of Object.entries(CURRENCY)) { buyerCurrency[key] = Math.floor(remainder / factor); remainder %= factor; }
+    const merchantCurrency = foundry.utils.deepClone(this.actor.system.currency ?? {});
     let credit = copper;
-    for (const [k, v] of Object.entries(CURRENCY)) { merchantFunds[k] = Number(merchantFunds[k] ?? 0) + Math.floor(credit / v); credit %= v; }
-    const source = entry.system ? { name: entry.name, type: entry.type, img: entry.img, system: foundry.utils.deepClone(entry.system) } : null;
-    if (!source) return ui.notifications.error("Stock item data is missing.");
+    for (const [key, factor] of Object.entries(CURRENCY)) { merchantCurrency[key] = Number(merchantCurrency[key] ?? 0) + Math.floor(credit / factor); credit %= factor; }
+    const source = { name: item.name, type: item.type, img: item.img, system: foundry.utils.deepClone(item.system) };
     source.system.quantity = Number(source.system.quantity ?? 1);
     await buyer.createEmbeddedDocuments("Item", [source]);
-    await buyer.update({ "system.currency": buyerFunds }); await this.actor.update({ "system.currency": merchantFunds });
-    entry.quantity = Number(entry.quantity ?? 1) - 1;
-    if (entry.quantity <= 0) stock.splice(stock.indexOf(entry), 1);
-    await this.actor.setFlag(MODULE_ID, "stock", stock); this.render();
+    await buyer.update({ "system.currency": buyerCurrency });
+    await this.actor.update({ "system.currency": merchantCurrency });
+    item.quantity = Number(item.quantity ?? 1) - 1;
+    if (item.quantity <= 0) stock.splice(stock.indexOf(item), 1);
+    await this.actor.setFlag(MODULE_ID, "stock", stock);
+    this.render();
   }
   _onDrop(event) {
-    super._onDrop?.(event);
     const data = TextEditor.getDragEventData(event);
-    if (data?.type !== "Item") return;
+    if (data?.type !== "Item") return super._onDrop?.(event);
     event.preventDefault();
-    (async () => { const item = await fromUuid(data.uuid); if (item) await this.#addStock(item.toObject()); })();
+    fromUuid(data.uuid).then(item => item && this.addStock(item.toObject()));
   }
 }
 
-Hooks.on("renderMerchantNPC", (_app, _html) => {});
+class ItemBrowser extends HandlebarsApplicationMixin(ApplicationV2) {
+  constructor(actor, merchantSheet, options = {}) {
+    super({ ...options, id: `merchant-item-browser-${actor.id}` });
+    this.actor = actor;
+    this.merchantSheet = merchantSheet;
+    this.catalog = null;
+    this.selectedTypes = null;
+    this.selectedSources = null;
+    this.search = "";
+    this.visibleItems = [];
+  }
+  static DEFAULT_OPTIONS = {
+    id: "merchant-item-browser", tag: "form", classes: ["merchant-item-browser"], window: { title: "Add Items to Shop", resizable: true }, position: { width: 1050, height: 720 },
+    form: { handler: ItemBrowser.#onSubmit, submitOnChange: false },
+    actions: { applyFilters: ItemBrowser.#applyFilters, addItem: ItemBrowser.#addItem, randomItems: ItemBrowser.#randomItems, rollTable: ItemBrowser.#rollTable, done: ItemBrowser.#done }
+  };
+  static PARTS = { form: { template: "modules/merchant-npc/templates/item-browser.hbs" } };
+  async #loadCatalog() {
+    if (this.catalog) return this.catalog;
+    const sources = [];
+    const worldItems = game.items.contents.map(item => ({ _id: item.id, name: item.name, img: item.img, type: item.type, item, source: "world-items" }));
+    if (worldItems.length) sources.push({ id: "world-items", label: "World Items", items: worldItems, world: true });
+    for (const pack of game.packs.filter(candidate => candidate.documentName === "Item")) {
+      await pack.getIndex();
+      const items = [...pack.index].map(entry => ({ _id: entry._id, name: entry.name, img: entry.img, type: entry.type, source: pack.collection }));
+      if (items.length) sources.push({ id: pack.collection, label: pack.title, items, world: false });
+    }
+    sources.sort((a, b) => a.label.localeCompare(b.label));
+    this.catalog = sources;
+    return sources;
+  }
+  async _prepareContext() {
+    const sources = await this.#loadCatalog();
+    const allTypes = [...new Set(sources.flatMap(source => source.items.map(item => item.type).filter(Boolean)))].sort();
+    this.selectedTypes ??= new Set(allTypes);
+    const matchingSources = sources.filter(source => source.items.some(item => this.selectedTypes.has(item.type)));
+    this.selectedSources ??= new Set(matchingSources.map(source => source.id));
+    this.selectedSources = new Set([...this.selectedSources].filter(id => matchingSources.some(source => source.id === id)));
+    const typeOptions = allTypes.map(value => ({ value, label: ITEM_TYPE_LABELS[value] ?? value[0].toUpperCase() + value.slice(1), checked: this.selectedTypes.has(value) }));
+    const sourceOptions = matchingSources.map(source => ({ id: source.id, label: source.label, count: source.items.filter(item => this.selectedTypes.has(item.type)).length, checked: this.selectedSources.has(source.id) }));
+    const query = this.search.trim().toLowerCase();
+    this.visibleItems = matchingSources.filter(source => this.selectedSources.has(source.id)).flatMap(source => source.items
+      .filter(item => this.selectedTypes.has(item.type) && (!query || item.name.toLowerCase().includes(query)))
+      .map(item => ({ ...item, typeLabel: ITEM_TYPE_LABELS[item.type] ?? item.type, sourceLabel: sources.find(source => source.id === item.source)?.label ?? item.source })))
+      .sort((a, b) => a.name.localeCompare(b.name));
+    const tables = await getRollTables();
+    return { actor: this.actor, types: typeOptions, sources: sourceOptions, items: this.visibleItems, tables, search: this.search, randomCount: game.settings.get(MODULE_ID, "randomCount"), isGM: game.user.isGM };
+  }
+  static async #onSubmit() {}
+  static async #applyFilters() {
+    this.selectedTypes = new Set([...this.element.querySelectorAll("[name='itemType']:checked")].map(input => input.value));
+    this.selectedSources = new Set([...this.element.querySelectorAll("[name='itemSource']:checked")].map(input => input.value));
+    this.search = this.element.querySelector("[name='itemSearch']")?.value ?? "";
+    this.render();
+  }
+  async #resolveItem(sourceId, itemId) {
+    if (sourceId === "world-items") return game.items.get(itemId);
+    return game.packs.get(sourceId)?.getDocument(itemId);
+  }
+  static async #addItem(_event, target) {
+    const item = await this.#resolveItem(target.dataset.source, target.dataset.item);
+    if (!item) return ui.notifications.warn("Could not load that item.");
+    await this.merchantSheet.addStock(item.toObject());
+    ui.notifications.info(`${item.name} added to ${this.actor.name}'s shop.`);
+  }
+  static async #randomItems() {
+    const count = Math.max(1, Number(this.element.querySelector("[name='randomCount']")?.value ?? game.settings.get(MODULE_ID, "randomCount")));
+    const shuffled = [...this.visibleItems];
+    for (let i = shuffled.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]]; }
+    const selected = shuffled.slice(0, count);
+    for (const record of selected) {
+      const item = await this.#resolveItem(record.source, record._id);
+      if (item) await this.merchantSheet.addStock(item.toObject());
+    }
+    if (!selected.length) ui.notifications.warn("No items match the selected item types and compendiums.");
+    else ui.notifications.info(`Added ${selected.length} random item${selected.length === 1 ? "" : "s"} to the shop.`);
+  }
+  static async #rollTable() {
+    const uuid = this.element.querySelector("[name='rollTableUuid']")?.value;
+    const draws = Math.max(1, Math.min(100, Number(this.element.querySelector("[name='tableDraws']")?.value ?? 1)));
+    const table = uuid && await fromUuid(uuid);
+    if (!table) return ui.notifications.warn("Choose a rollable table first.");
+    let added = 0;
+    for (let i = 0; i < draws; i++) {
+      const draw = await table.draw({ displayChat: false, recursive: true });
+      for (const result of draw.results ?? []) {
+        let item;
+        try { item = await result.getDocument?.(); } catch { /* Try the result UUID below. */ }
+        if (!isItemDocument(item) && result.documentUuid) {
+          try { item = await fromUuid(result.documentUuid); } catch { /* Ignore non-item table results. */ }
+        }
+        if (!isItemDocument(item) && result.documentCollection && result.documentId) {
+          if (result.documentCollection === "world.items") item = game.items.get(result.documentId);
+          else {
+            const uuid = result.documentCollection.startsWith("Compendium.") ? `${result.documentCollection}.${result.documentId}` : `Compendium.${result.documentCollection}.${result.documentId}`;
+            try { item = await fromUuid(uuid); } catch { /* Ignore non-item table results. */ }
+          }
+        }
+        if (isItemDocument(item)) { await this.merchantSheet.addStock(item.toObject()); added++; }
+      }
+    }
+    if (added) ui.notifications.info(`Added ${added} item result${added === 1 ? "" : "s"} from ${table.name}.`);
+    else ui.notifications.warn("The selected table returned no linked Item documents. Link its results to Item documents to stock them automatically.");
+  }
+  static async #done() { this.close(); }
+}
+
+async function getRollTables() {
+  const tables = game.tables.contents.map(table => ({ uuid: table.uuid, name: table.name, source: "World Tables" }));
+  for (const pack of game.packs.filter(candidate => candidate.documentName === "RollTable")) {
+    await pack.getIndex();
+    for (const entry of pack.index) tables.push({ uuid: entry.uuid ?? `Compendium.${pack.collection}.${entry._id}`, name: entry.name, source: pack.title });
+  }
+  return tables.sort((a, b) => a.name.localeCompare(b.name));
+}

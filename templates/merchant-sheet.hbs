@@ -1,63 +1,44 @@
 <section class="merchant-layout">
   <header class="merchant-heading">
     <img src="{{actor.img}}" alt="">
-    <div><h2>{{actor.name}}</h2><p>{{shopTypeLabel}} · Funds: {{funds}}</p></div>
+    <div><h2>{{actor.name}}</h2><p>{{funds}}</p></div>
   </header>
 
   {{#if isGM}}
-  <section class="merchant-panel">
-    <h3>Stock setup</h3>
-    <div class="merchant-add">
-      <label>World item
-        <select name="worldItem"><option value="">Select an item…</option>{{#each worldItems as |item|}}<option value="{{item.id}}">{{item.name}}</option>{{/each}}</select>
-      </label>
-      <button type="button" data-action="addWorldItem">Add item</button>
-    </div>
-    <p class="hint">You can also drag items from the Items sidebar or a compendium onto this shop.</p>
-
-    <div class="merchant-pack-area">
-      <h4>Random stock compendiums</h4>
-      {{#if packs.length}}
-        <div class="merchant-packs">
-          {{#each packs as |pack|}}
-            <label class="merchant-pack-row"><input type="checkbox" name="sourcePack" value="{{pack.collection}}"><span>{{pack.label}}</span><small>{{pack.count}} items</small></label>
-          {{/each}}
-        </div>
-        <button type="button" data-action="generate">Generate {{randomCount}} random {{shopTypeLabel}} items</button>
-      {{else}}
-        <p class="empty">No non-empty item compendiums are available.</p>
-      {{/if}}
-    </div>
-  </section>
-
-  <section class="merchant-panel merchant-float">
-    <h3>Starting float</h3>
-    <p class="hint">{{floatHint}} Custom amounts are entered directly in gp.</p>
+  <section class="merchant-admin merchant-panel">
+    <div class="merchant-panel-heading"><h3>Shop setup</h3><button type="button" data-action="addItems"><i class="fas fa-plus"></i> Add Items</button></div>
+    <p class="hint">Shop type: {{shopTypeLabel}}</p>
     <div class="merchant-float-controls">
-      <label>Preset<select name="floatPreset"><option value="">Choose a preset…</option>{{#each floatPresets as |preset|}}<option value="{{preset.value}}">{{preset.label}}</option>{{/each}}<option value="custom">Custom amount</option></select></label>
+      <label>Starting float preset<select name="floatPreset"><option value="">Choose a preset…</option>{{#each floatPresets as |preset|}}<option value="{{preset.value}}">{{preset.label}}</option>{{/each}}<option value="custom">Custom amount</option></select></label>
       <label>Custom amount (gp)<input type="number" name="floatAmount" min="0" step="0.01" value="0"></label>
-      <button type="button" data-action="setFloat">Set funds</button>
+      <button type="button" data-action="setFloat">Set Funds</button>
     </div>
+    <p class="hint">{{floatHint}} Normal presets: Poor 200 gp, Average 500 gp, Rich 1,000 gp. Jeweller presets are 10×.</p>
   </section>
   {{/if}}
 
-  <div class="merchant-buy-select">
-    <label>Buyer<select name="buyer"><option value="">Choose player character…</option>{{#each buyers as |buyer|}}<option value="{{buyer.id}}">{{buyer.name}}</option>{{/each}}</select></label>
-  </div>
+  <div class="merchant-buy-select"><label>Buyer<select name="buyer"><option value="">Choose player character…</option>{{#each buyers as |buyer|}}<option value="{{buyer.id}}">{{buyer.name}}</option>{{/each}}</select></label></div>
 
   <section class="merchant-stock-area">
-    <h3>For sale <span>{{shopTypeLabel}}</span></h3>
+    <h3>Shop Items <span>{{stock.length}} listed</span></h3>
     <ul class="merchant-stock">
       {{#each stock as |item|}}
-        <li class="merchant-item">
+        <li class="merchant-item" data-stock-id="{{item.id}}">
           <img src="{{item.img}}" alt="">
-          <div class="merchant-item-name"><strong>{{item.name}}</strong><small>{{item.type}} · Qty {{item.quantity}}</small></div>
-          <div class="merchant-price">{{item.priceText}}</div>
+          <div class="merchant-item-name"><strong>{{item.name}}</strong><small>{{item.type}}</small></div>
+          {{#if @root.isGM}}
+            <label class="stock-field">Qty<input name="quantity" type="number" min="0" step="1" value="{{item.quantity}}"></label>
+            <label class="stock-field">Price<input name="price" type="number" min="0" step="0.01" value="{{item.system.price.value}}"></label>
+            <select name="denomination" aria-label="Price denomination"><option value="cp" {{#if (eq item.system.price.denomination "cp")}}selected{{/if}}>cp</option><option value="sp" {{#if (eq item.system.price.denomination "sp")}}selected{{/if}}>sp</option><option value="ep" {{#if (eq item.system.price.denomination "ep")}}selected{{/if}}>ep</option><option value="gp" {{#if (eq item.system.price.denomination "gp")}}selected{{/if}}>gp</option><option value="pp" {{#if (eq item.system.price.denomination "pp")}}selected{{/if}}>pp</option></select>
+            <button type="button" data-action="saveItem" title="Save price and quantity"><i class="fas fa-save"></i></button>
+            <button type="button" class="icon-button" data-action="removeItem" data-id="{{item.id}}" title="Remove item"><i class="fas fa-trash"></i></button>
+          {{else}}
+            <div class="merchant-item-qty">Qty {{item.quantity}}</div><div class="merchant-price">{{item.priceText}}</div>
+          {{/if}}
           <button type="button" data-action="buy" data-id="{{item.id}}">Buy</button>
-          {{#if @root.isGM}}<button type="button" class="icon-button" data-action="removeItem" data-id="{{item.id}}" title="Remove item"><i class="fas fa-trash"></i></button>{{/if}}
         </li>
       {{else}}
-        <li class="empty">No items for sale in this shop yet.</li>
+        <li class="empty">No items in this shop. GMs can use <strong>Add Items</strong> to stock it.</li>
       {{/each}}
     </ul>
   </section>
