@@ -258,49 +258,6 @@ function promptPurchase({ item, buyer, stockEntry }) {
   });
 }
 
-function askZeroPriceApproval({ merchant, buyer, requestingUser, entry, quantity }) {
-  return new Promise(resolve => {
-    const overlay = document.createElement("div");
-    overlay.className = "merchant-purchase-overlay";
-    overlay.setAttribute("role", "alertdialog");
-    overlay.setAttribute("aria-modal", "true");
-    const panel = document.createElement("section");
-    panel.className = "merchant-purchase-dialog";
-    const heading = document.createElement("h2");
-    heading.textContent = "Approve free item purchase?";
-    const details = document.createElement("p");
-    details.textContent = `${requestingUser.name} requests ${quantity} × ${entry.name} from ${merchant.name} for 0 gp, using ${buyer.name}.`;
-    const note = document.createElement("p");
-    note.textContent = "This item has a price of zero. Approve or reject this purchase.";
-    const actions = document.createElement("div");
-    actions.className = "purchase-dialog-actions";
-    const reject = document.createElement("button");
-    reject.type = "button";
-    reject.textContent = "Reject";
-    const approve = document.createElement("button");
-    approve.type = "button";
-    approve.textContent = "Approve Purchase";
-    actions.append(reject, approve);
-    panel.append(heading, details, note, actions);
-    overlay.append(panel);
-    document.body.append(overlay);
-    let settled = false;
-    const timer = window.setTimeout(() => finish(false), 120000);
-    const finish = approved => {
-      if (settled) return;
-      settled = true;
-      window.clearTimeout(timer);
-      overlay.remove();
-      resolve(approved);
-    };
-    reject.addEventListener("click", () => finish(false));
-    approve.addEventListener("click", () => finish(true));
-    overlay.addEventListener("click", event => { if (event.target === overlay) finish(false); });
-    overlay.addEventListener("keydown", event => { if (event.key === "Escape") finish(false); });
-    approve.focus();
-  });
-}
-
 const purchaseQueues = new Map();
 async function processPurchase(request) {
   const previous = purchaseQueues.get(request.actorId) ?? Promise.resolve();
@@ -315,8 +272,12 @@ async function processPurchase(request) {
   }
 }
 
-async function commitPurchase({ actorId, buyerId, stockId, userId, quantity = 1 }) {
-  const merchant = game.actors.get(actorId), buyer = game.actors.get(buyerId), requestingUser = game.users.get(userId);
+async function commitPurchase({ actorId, actorUuid, buyerId, stockId, userId, quantity = 1 }) {
+  // A shop can be opened from an unlinked token, where its synthetic actor may
+  // have different stock from the base world actor with the same actor id.
+  let merchant = actorUuid ? await fromUuid(actorUuid).catch(() => null) : null;
+  merchant ??= game.actors.get(actorId);
+  const buyer = game.actors.get(buyerId), requestingUser = game.users.get(userId);
   if (!merchant || !buyer || !requestingUser || (!requestingUser.isGM && requestingUser.character?.id !== buyer.id)) return { success: false, message: "The selected buyer is not assigned to your user." };
   if (!requestingUser.isGM && !buyer.testUserPermission(requestingUser, CONST.DOCUMENT_OWNERSHIP_LEVELS.OWNER)) return { success: false, message: "You do not own that character." };
   let stock = foundry.utils.deepClone(merchant.getFlag(MODULE_ID, "stock") ?? []), entry = stock.find(item => item.id === stockId);
@@ -331,11 +292,8 @@ async function commitPurchase({ actorId, buyerId, stockId, userId, quantity = 1 
   if (!Number.isSafeInteger(unitCost) || unitCost < 0 || !Number.isSafeInteger(cost)) return { success: false, message: "This item has an invalid price." };
   let buyerCurrency = buyer.system.currency ?? {}, merchantCurrency = merchant.system.currency ?? {};
   if (copperValue(buyerCurrency) < cost) return { success: false, message: `Insufficient funds. Your current purse is ${currencyText(buyerCurrency)}; reduce the quantity.` };
-  if (Number(rawPrice) === 0 && !await askZeroPriceApproval({ merchant, buyer, requestingUser, entry, quantity: count })) {
-    return { success: false, message: "The DM rejected the zero-price purchase." };
-  }
-  // The GM may have changed the listing while approving a free item. Re-read
-  // the live listing and reject if its price or available quantity changed.
+  // Re-read the live listing before committing so the transaction cannot use
+  // stale stock or price data from when the shop was first opened.
   stock = foundry.utils.deepClone(merchant.getFlag(MODULE_ID, "stock") ?? []);
   entry = stock.find(item => item.id === stockId);
   if (!entry || Number(entry.quantity) < count) return { success: false, message: `Only ${Math.max(0, Number(entry?.quantity) || 0)} available. Reduce the quantity.` };
@@ -381,6 +339,10 @@ async function commitPurchase({ actorId, buyerId, stockId, userId, quantity = 1 
     entry.quantity = Number(entry.quantity) - count;
     await merchant.setFlag(MODULE_ID, "stock", stock);
     stockUpdated = true;
+    const escape = value => foundry.utils.escapeHTML(String(value ?? ""));
+    const gmIds = game.users.filter(user => user.isGM).map(user => user.id);
+    const card = `<div class="merchant-purchase-card"><h3>Merchant Purchase</h3><p><strong>${escape(requestingUser.name)}</strong> purchased <strong>${count} × ${escape(entry.name)}</strong> from ${escape(merchant.name)} for ${escape(copperText(cost))}.</p></div>`;
+    void ChatMessage.create({ content: card, whisper: gmIds }).catch(error => console.error(`${MODULE_ID} | Could not create purchase chat card.`, error));
     return { success: true, message: `Purchased ${count} × ${entry.name} for ${copperText(cost)}.` };
   } catch (error) {
     console.error(`${MODULE_ID} | Purchase failed while ${stage}.`, error);
@@ -393,10 +355,10 @@ async function commitPurchase({ actorId, buyerId, stockId, userId, quantity = 1 
     return { success: false, message: `The purchase failed while ${stage}: ${error.message ?? error}. No purchase should have been completed; check the GM console if the problem continues.` };
   }
 }
-function requestPurchase(actorId, buyerId, stockId, quantity) {
+function requestPurchase(actorId, actorUuid, buyerId, stockId, quantity) {
   return new Promise(resolve => {
     const requestId = foundry.utils.randomID(); pendingPurchases.set(requestId, resolve);
-    game.socket.emit(`module.${MODULE_ID}`, { kind: "purchase-request", requestId, actorId, buyerId, stockId, quantity, userId: game.user.id });
+    game.socket.emit(`module.${MODULE_ID}`, { kind: "purchase-request", requestId, actorId, actorUuid, buyerId, stockId, quantity, userId: game.user.id });
       window.setTimeout(() => {
       if (!pendingPurchases.has(requestId)) return;
       pendingPurchases.delete(requestId);
@@ -522,8 +484,8 @@ class MerchantSheet extends HandlebarsApplicationMixin(ApplicationV2) {
     const purchase = await promptPurchase({ item: stockEntry, buyer, stockEntry });
     if (!purchase) return;
     const result = game.user.isGM
-      ? await processPurchase({ actorId: this.actor.id, buyerId: buyer.id, stockId: target.dataset.id, quantity: purchase.quantity, userId: game.user.id })
-      : await requestPurchase(this.actor.id, buyer.id, target.dataset.id, purchase.quantity);
+      ? await processPurchase({ actorId: this.actor.id, actorUuid: this.actor.uuid, buyerId: buyer.id, stockId: target.dataset.id, quantity: purchase.quantity, userId: game.user.id })
+      : await requestPurchase(this.actor.id, this.actor.uuid, buyer.id, target.dataset.id, purchase.quantity);
     if (!result?.success) return ui.notifications.warn(result?.message ?? "The purchase could not be completed.");
     ui.notifications.info(result.message ?? "Purchase completed.");
     this.render();

@@ -23,12 +23,13 @@ Copy the `merchant-npc` folder into your Foundry `Data/modules` directory, then 
 - The merchant sheet shows the full shop inventory. GMs can edit stock quantities and prices, remove items, and set a starting purse. Repeated additions and repeated Rollable Table results are allowed and increase the stock quantity. Item prices and denominations are copied from the source item, and the GM is alerted when a listed item has no price.
 - GMs can set the merchant's purse to a custom amount in gp, or use Poor (200 gp), Average (500 gp), and Rich (1,000 gp) starting-float presets. Jewellers use ten times those preset values.
 - Set each item's price in its D&D 5e item data before listing it. Stock quantity is tracked by the shop; a purchase sells one unit.
-- Players click **Purchase** using the character assigned to their Foundry user, choose a quantity, and see their purse and total before confirming. Purchases are validated and completed automatically using the exact value of all `system.currency` denominations; currency is deducted, the purchased quantity is added to the character, merchant funds are credited, and stock is reduced. An active GM client handles the permission-secured transaction in the background; no manual approval is required unless the listed item has an explicit price of 0, in which case the DM must approve it. Items with no price set cannot be purchased.
+- Players click **Purchase** using the character assigned to their Foundry user, choose a quantity, and see their purse and total before confirming. Purchases are validated and completed automatically using the exact value of all `system.currency` denominations; currency is deducted, the purchased quantity is added to the character, merchant funds are credited, and stock is reduced. The active GM client handles the permission-secured transaction in the background. After a completed purchase, GMs receive a private chat card with the buyer, item, quantity, merchant, and total. Items with no price set cannot be purchased.
 - Merchant stock is saved in the NPC actor's `merchant-npc.stock` flag; merchant funds use the NPC's normal D&D 5e currency fields.
 
 ## Notes
 
 This initial version handles the standard D&D 5e coin denominations (pp, gp, ep, sp, cp), converts currency to the exact copper value for affordability, and re-denominates the remaining balance. It assumes item prices use the standard denomination values and the `system.price.value` plus `system.price.denomination` data fields. It does not apply discounts, taxes, or quantity multipliers.
+
 
 
 
