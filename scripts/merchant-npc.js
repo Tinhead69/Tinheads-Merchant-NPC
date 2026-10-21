@@ -7,6 +7,10 @@ const ITEM_CATEGORIES = [
   ["magic", "Magic Items"], ["equipment", "Normal Equipment"]
 ];
 const pendingPurchases = new Map();
+// Keep the indexed catalog for this client session so reopening Add Items does
+// not repeat compendium indexing and item/description classification.
+let indexedCatalog = null;
+let indexingCatalog = null;
 
 function priceLabel(price = {}) { return `${price.value ?? price.amount ?? 0} ${price.denomination ?? price.currency ?? "gp"}`; }
 function isItemDocument(document) { return document?.documentName === "Item"; }
@@ -109,6 +113,11 @@ Hooks.once("ready", () => {
     condition: (li) => isConfiguredShop(game.actors.get(li.data("documentId"))),
     callback: (li) => game.merchantNPC.open(game.actors.get(li.data("documentId")))
   }));
+  Hooks.on("getActorDirectoryEntryContext", (_html, entries) => entries.push({
+    name: "Set Up Merchant Shop", icon: '<i class="fas fa-store"></i>',
+    condition: (li) => game.user.isGM && game.actors.get(li.data("documentId"))?.type === "npc" && !isConfiguredShop(game.actors.get(li.data("documentId"))),
+    callback: (li) => game.merchantNPC.open(game.actors.get(li.data("documentId")))
+  }));
   // Directory double-click works even when Foundry blocks opening the actor sheet for a player.
   Hooks.on("renderActorDirectory", (app, html) => {
     const root = html instanceof HTMLElement ? html : html?.[0];
@@ -145,6 +154,7 @@ Hooks.once("ready", () => {
       });
       return;
     }
+    if (!configuredShop) return;
     const root = html instanceof HTMLElement ? html : html?.[0];
     const header = root?.querySelector(".window-header");
     if (!header || header.querySelector(".merchant-open")) return;
@@ -165,33 +175,187 @@ function currencyFromCopper(amount) {
   for (const [key, value] of Object.entries(CURRENCY)) { result[key] = Math.floor(remaining / value); remaining %= value; }
   return result;
 }
-async function processPurchase({ actorId, buyerId, stockId, userId }) {
+function currencyText(currency = {}) {
+  const parts = Object.keys(CURRENCY).map(key => [key, Number(currency[key] ?? 0)]).filter(([, amount]) => amount > 0).map(([key, amount]) => `${amount} ${key}`);
+  return parts.join(", ") || "0 cp";
+}
+function copperText(amount) {
+  return Object.entries(currencyFromCopper(amount)).filter(([, value]) => value > 0).map(([key, value]) => `${value} ${key}`).join(", ") || "0 cp";
+}
+function promptPurchase({ item, buyer, stockEntry }) {
+  return new Promise(resolve => {
+    const price = stockEntry.system?.price ?? {};
+    const denomination = String(price.denomination ?? "gp").toLowerCase();
+    const coinValue = CURRENCY[denomination];
+    const rawPrice = price.value ?? price.amount;
+    const hasPrice = rawPrice !== undefined && rawPrice !== null && rawPrice !== "";
+    const unitCost = Math.round(Number(rawPrice) * coinValue);
+    const availableFunds = copperValue(buyer.system.currency ?? {});
+    const availableStock = Math.max(0, Math.floor(Number(stockEntry.quantity) || 0));
+    const overlay = document.createElement("div");
+    overlay.className = "merchant-purchase-overlay";
+    overlay.setAttribute("role", "dialog");
+    overlay.setAttribute("aria-modal", "true");
+    const panel = document.createElement("section");
+    panel.className = "merchant-purchase-dialog";
+    const heading = document.createElement("h2");
+    heading.textContent = `Purchase ${item.name}`;
+    const unit = document.createElement("p");
+    unit.textContent = `Price each: ${priceLabel(price)}`;
+    const label = document.createElement("label");
+    label.textContent = "Quantity";
+    const quantity = document.createElement("input");
+    quantity.type = "number";
+    quantity.name = "purchaseQuantity";
+    quantity.min = "1";
+    quantity.step = "1";
+    quantity.max = String(availableStock);
+    quantity.value = "1";
+    label.append(quantity);
+    const funds = document.createElement("p");
+    funds.textContent = `Your funds: ${currencyText(buyer.system.currency ?? {})} (${copperText(availableFunds)} total)`;
+    const total = document.createElement("p");
+    total.className = "purchase-total";
+    const status = document.createElement("p");
+    status.className = "purchase-status";
+    const actions = document.createElement("div");
+    actions.className = "purchase-dialog-actions";
+    const cancel = document.createElement("button");
+    cancel.type = "button";
+    cancel.textContent = "Cancel";
+    const confirm = document.createElement("button");
+    confirm.type = "button";
+    confirm.textContent = "Confirm Purchase";
+    actions.append(cancel, confirm);
+    panel.append(heading, unit, label, funds, total, status, actions);
+    overlay.append(panel);
+    document.body.append(overlay);
+    const close = result => {
+      overlay.remove();
+      resolve(result);
+    };
+    const update = () => {
+      const count = Math.floor(Number(quantity.value));
+      const validPrice = hasPrice && Number.isSafeInteger(unitCost) && unitCost >= 0;
+      const validQuantity = Number.isSafeInteger(count) && count > 0;
+      const cost = validQuantity && validPrice ? unitCost * count : Number.POSITIVE_INFINITY;
+      total.textContent = Number.isFinite(cost) ? `Total: ${copperText(cost)}` : "Total: —";
+      if (!hasPrice) status.textContent = "No price is set. Ask the DM to set a price before purchasing.";
+      else if (!validPrice) status.textContent = "This item has an invalid price. Ask the DM to check it.";
+      else if (!validQuantity) status.textContent = "Enter a quantity of at least 1.";
+      else if (count > availableStock) status.textContent = `Only ${availableStock} available. Reduce the quantity.`;
+      else if (cost > availableFunds) status.textContent = "Insufficient funds. Reduce the quantity to continue.";
+      else status.textContent = "You have enough funds for this purchase.";
+      confirm.disabled = !validPrice || !validQuantity || count > availableStock || cost > availableFunds;
+    };
+    quantity.addEventListener("input", update);
+    cancel.addEventListener("click", () => close(null));
+    confirm.addEventListener("click", () => close({ quantity: Math.floor(Number(quantity.value)) }));
+    overlay.addEventListener("click", event => { if (event.target === overlay) close(null); });
+    overlay.addEventListener("keydown", event => { if (event.key === "Escape") close(null); });
+    update();
+    quantity.focus();
+  });
+}
+
+function askZeroPriceApproval({ merchant, buyer, requestingUser, entry, quantity }) {
+  return new Promise(resolve => {
+    const overlay = document.createElement("div");
+    overlay.className = "merchant-purchase-overlay";
+    overlay.setAttribute("role", "alertdialog");
+    overlay.setAttribute("aria-modal", "true");
+    const panel = document.createElement("section");
+    panel.className = "merchant-purchase-dialog";
+    const heading = document.createElement("h2");
+    heading.textContent = "Approve free item purchase?";
+    const details = document.createElement("p");
+    details.textContent = `${requestingUser.name} requests ${quantity} × ${entry.name} from ${merchant.name} for 0 gp, using ${buyer.name}.`;
+    const note = document.createElement("p");
+    note.textContent = "This item has a price of zero. Approve or reject this purchase.";
+    const actions = document.createElement("div");
+    actions.className = "purchase-dialog-actions";
+    const reject = document.createElement("button");
+    reject.type = "button";
+    reject.textContent = "Reject";
+    const approve = document.createElement("button");
+    approve.type = "button";
+    approve.textContent = "Approve Purchase";
+    actions.append(reject, approve);
+    panel.append(heading, details, note, actions);
+    overlay.append(panel);
+    document.body.append(overlay);
+    let settled = false;
+    const timer = window.setTimeout(() => finish(false), 120000);
+    const finish = approved => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timer);
+      overlay.remove();
+      resolve(approved);
+    };
+    reject.addEventListener("click", () => finish(false));
+    approve.addEventListener("click", () => finish(true));
+    overlay.addEventListener("click", event => { if (event.target === overlay) finish(false); });
+    overlay.addEventListener("keydown", event => { if (event.key === "Escape") finish(false); });
+    approve.focus();
+  });
+}
+
+const purchaseQueues = new Map();
+async function processPurchase(request) {
+  const previous = purchaseQueues.get(request.actorId) ?? Promise.resolve();
+  let release;
+  const current = new Promise(resolve => { release = resolve; });
+  purchaseQueues.set(request.actorId, current);
+  await previous;
+  try { return await commitPurchase(request); }
+  finally {
+    release();
+    if (purchaseQueues.get(request.actorId) === current) purchaseQueues.delete(request.actorId);
+  }
+}
+
+async function commitPurchase({ actorId, buyerId, stockId, userId, quantity = 1 }) {
   const merchant = game.actors.get(actorId), buyer = game.actors.get(buyerId), requestingUser = game.users.get(userId);
   if (!merchant || !buyer || !requestingUser || (!requestingUser.isGM && requestingUser.character?.id !== buyer.id)) return { success: false, message: "The selected buyer is not assigned to your user." };
   if (!requestingUser.isGM && !buyer.testUserPermission(requestingUser, CONST.DOCUMENT_OWNERSHIP_LEVELS.OWNER)) return { success: false, message: "You do not own that character." };
   const stock = foundry.utils.deepClone(merchant.getFlag(MODULE_ID, "stock") ?? []), entry = stock.find(item => item.id === stockId);
-  if (!entry || Number(entry.quantity) < 1) return { success: false, message: "That item is out of stock." };
-  const price = entry.system?.price ?? {}, denomination = String(price.denomination ?? "gp").toLowerCase(), coinValue = CURRENCY[denomination];
-  const cost = Math.round(Number(price.value ?? price.amount ?? 0) * coinValue);
-  if (!Number.isFinite(cost) || cost < 0) return { success: false, message: "This item has an invalid price." };
+  const count = Math.floor(Number(quantity));
+  if (!Number.isSafeInteger(count) || count < 1) return { success: false, message: "Choose a valid purchase quantity." };
+  if (!entry || Number(entry.quantity) < count) return { success: false, message: `Only ${Math.max(0, Number(entry?.quantity) || 0)} available. Reduce the quantity.` };
+  const price = entry.system?.price ?? {}, rawPrice = price.value ?? price.amount, denomination = String(price.denomination ?? "gp").toLowerCase(), coinValue = CURRENCY[denomination];
+  const hasPrice = rawPrice !== undefined && rawPrice !== null && rawPrice !== "";
+  if (!hasPrice) return { success: false, message: "This item has no price set. Ask the DM to set a price before purchasing." };
+  const unitCost = Math.round(Number(rawPrice) * coinValue);
+  const cost = unitCost * count;
+  if (!Number.isSafeInteger(unitCost) || unitCost < 0 || !Number.isSafeInteger(cost)) return { success: false, message: "This item has an invalid price." };
   const buyerCurrency = buyer.system.currency ?? {}, merchantCurrency = merchant.system.currency ?? {};
-  if (copperValue(buyerCurrency) < cost) return { success: false, message: "You do not have enough money." };
+  if (copperValue(buyerCurrency) < cost) return { success: false, message: `Insufficient funds. Your current purse is ${currencyText(buyerCurrency)}; reduce the quantity.` };
+  if (Number(rawPrice) === 0 && !await askZeroPriceApproval({ merchant, buyer, requestingUser, entry, quantity: count })) {
+    return { success: false, message: "The DM rejected the zero-price purchase." };
+  }
   try {
     const sourceItem = entry.sourceUuid ? await fromUuid(entry.sourceUuid) : null;
     const itemData = sourceItem?.toObject?.() ?? { name: entry.name, type: entry.type, img: entry.img, system: foundry.utils.deepClone(entry.system ?? {}) };
     delete itemData._id;
+    itemData.system ??= {};
+    itemData.system.quantity = count;
     await buyer.createEmbeddedDocuments("Item", [itemData]);
     await buyer.update({ "system.currency": currencyFromCopper(copperValue(buyerCurrency) - cost) });
     await merchant.update({ "system.currency": currencyFromCopper(copperValue(merchantCurrency) + cost) });
-    entry.quantity = Number(entry.quantity) - 1; await merchant.setFlag(MODULE_ID, "stock", stock);
-    return { success: true, message: `Purchased ${entry.name} for ${priceLabel(price)}.` };
+    entry.quantity = Number(entry.quantity) - count; await merchant.setFlag(MODULE_ID, "stock", stock);
+    return { success: true, message: `Purchased ${count} × ${entry.name} for ${copperText(cost)}.` };
   } catch (error) { console.error(`${MODULE_ID} | Purchase failed`, error); return { success: false, message: "The purchase failed while updating the actors." }; }
 }
-function requestPurchase(actorId, buyerId, stockId) {
+function requestPurchase(actorId, buyerId, stockId, quantity) {
   return new Promise(resolve => {
     const requestId = foundry.utils.randomID(); pendingPurchases.set(requestId, resolve);
-    game.socket.emit(`module.${MODULE_ID}`, { kind: "purchase-request", requestId, actorId, buyerId, stockId, userId: game.user.id });
-    window.setTimeout(() => { if (pendingPurchases.has(requestId)) { pendingPurchases.delete(requestId); resolve({ success: false, message: "The GM did not respond to the purchase request." }); } }, 15000);
+    game.socket.emit(`module.${MODULE_ID}`, { kind: "purchase-request", requestId, actorId, buyerId, stockId, quantity, userId: game.user.id });
+      window.setTimeout(() => {
+      if (!pendingPurchases.has(requestId)) return;
+      pendingPurchases.delete(requestId);
+        resolve({ success: false, message: "The purchase could not be processed. An active GM must be connected to update the shop and complete the transaction." });
+      }, 130000);
   });
 }
 
@@ -211,6 +375,14 @@ class MerchantSheet extends HandlebarsApplicationMixin(ApplicationV2) {
   static PARTS = { form: { template: "modules/merchant-npc/templates/merchant-sheet.hbs" } };
   _onRender(context, options) {
     super._onRender?.(context, options);
+    if (this._restoreShopScrollTop !== undefined) {
+      const scrollTop = this._restoreShopScrollTop;
+      delete this._restoreShopScrollTop;
+      requestAnimationFrame(() => {
+        const scrollPane = this.element.querySelector(".merchant-layout");
+        if (scrollPane) scrollPane.scrollTop = scrollTop;
+      });
+    }
     for (const input of this.element.querySelectorAll(".price-input input[name='price']")) {
       const updatePriceColor = () => {
         const value = input.value.trim();
@@ -272,6 +444,7 @@ class MerchantSheet extends HandlebarsApplicationMixin(ApplicationV2) {
     item.system.price.value = Math.max(0, Number(row.querySelector("[name='price']")?.value ?? 0));
     item.system.price.denomination ??= item.system.price.currency ?? "gp";
     await this.actor.setFlag(MODULE_ID, "stock", stock);
+    this._restoreShopScrollTop = this.element.querySelector(".merchant-layout")?.scrollTop ?? 0;
     this.render();
   }
   static async #setFloat() {
@@ -298,9 +471,13 @@ class MerchantSheet extends HandlebarsApplicationMixin(ApplicationV2) {
   static async #buy(_event, target) {
     const buyer = game.user.character;
     if (!buyer) return ui.notifications.warn("Assign your user a character in User Configuration before purchasing.");
+    const stockEntry = (this.actor.getFlag(MODULE_ID, "stock") ?? []).find(item => item.id === target.dataset.id);
+    if (!stockEntry || Number(stockEntry.quantity) < 1) return ui.notifications.warn("That item is out of stock.");
+    const purchase = await promptPurchase({ item: stockEntry, buyer, stockEntry });
+    if (!purchase) return;
     const result = game.user.isGM
-      ? await processPurchase({ actorId: this.actor.id, buyerId: buyer.id, stockId: target.dataset.id, userId: game.user.id })
-      : await requestPurchase(this.actor.id, buyer.id, target.dataset.id);
+      ? await processPurchase({ actorId: this.actor.id, buyerId: buyer.id, stockId: target.dataset.id, quantity: purchase.quantity, userId: game.user.id })
+      : await requestPurchase(this.actor.id, buyer.id, target.dataset.id, purchase.quantity);
     if (!result?.success) return ui.notifications.warn(result?.message ?? "The purchase could not be completed.");
     ui.notifications.info(result.message ?? "Purchase completed.");
     this.render();
@@ -336,11 +513,12 @@ class ItemBrowser extends HandlebarsApplicationMixin(ApplicationV2) {
   #showLoadingDialog() {
     if (this.loadingDialog?.isConnected) return;
     this.loadingStartedAt = performance.now();
-    this.loadingDialog = document.createElement("dialog");
+    this.loadingDialog = document.createElement("div");
     this.loadingDialog.className = "merchant-loading-dialog";
-    this.loadingDialog.textContent = "Compendiums Loading - Please Wait";
+    this.loadingDialog.setAttribute("role", "alertdialog");
+    this.loadingDialog.setAttribute("aria-modal", "true");
+    this.loadingDialog.innerHTML = '<div class="merchant-loading-message">Compendiums Loading - Please Wait</div>';
     document.body.append(this.loadingDialog);
-    try { this.loadingDialog.showModal(); } catch { this.loadingDialog.setAttribute("open", ""); }
   }
   #hideLoadingDialog() {
     const dialog = this.loadingDialog;
@@ -348,7 +526,6 @@ class ItemBrowser extends HandlebarsApplicationMixin(ApplicationV2) {
     this.loadingDialog = null;
     const delay = Math.max(0, 250 - (performance.now() - this.loadingStartedAt));
     window.setTimeout(() => {
-      if (dialog.open) dialog.close();
       dialog.remove();
     }, delay);
   }
@@ -377,11 +554,16 @@ class ItemBrowser extends HandlebarsApplicationMixin(ApplicationV2) {
   }
   async #loadCatalog() {
     if (this.catalog) return this.catalog;
-    if (this.catalogPromise) return this.catalogPromise;
-    const loadingTimer = window.setTimeout(() => {
-      this.#showLoadingDialog();
-    }, 3000);
-    this.catalogPromise = (async () => {
+    if (indexedCatalog) {
+      this.catalog = indexedCatalog;
+      return indexedCatalog;
+    }
+    if (indexingCatalog) {
+      this.catalog = await indexingCatalog;
+      return this.catalog;
+    }
+    this.#showLoadingDialog();
+    indexingCatalog = (async () => {
       const sources = [];
       const worldItems = game.items.contents.map(item => ({ _id: item.id, name: item.name, img: item.img, type: item.type, category: classifyItem(item), description: stripHTML(item.system?.description?.value ?? item.system?.description ?? ""), source: "world-items" })).filter(item => item.category);
       if (worldItems.length) sources.push({ id: "world-items", label: "World Items", items: worldItems, world: true });
@@ -391,14 +573,16 @@ class ItemBrowser extends HandlebarsApplicationMixin(ApplicationV2) {
         if (items.length >= 5) sources.push({ id: pack.collection, label: pack.title, items, world: false });
       }
       sources.sort((a, b) => a.label.localeCompare(b.label));
-      this.catalog = sources;
+      indexedCatalog = sources;
       return sources;
     })();
-    try { return await this.catalogPromise; }
+    try {
+      this.catalog = await indexingCatalog;
+      return this.catalog;
+    }
     finally {
-      window.clearTimeout(loadingTimer);
       this.#hideLoadingDialog();
-      this.catalogPromise = null;
+      indexingCatalog = null;
     }
   }
   async _prepareContext() {

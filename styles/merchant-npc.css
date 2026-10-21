@@ -14,9 +14,9 @@
 .merchant-npc .merchant-stock-area { display: grid; gap: .35rem; overflow-x: auto; }
 .merchant-npc .merchant-stock-area h3 { display: flex; justify-content: space-between; align-items: baseline; }
 .merchant-npc .merchant-stock-area h3 span { font-size: .7em; opacity: .7; }
-.merchant-npc .merchant-stock { list-style: none; margin: 0; padding: 0; display: grid; gap: .35rem; min-width: 820px; }
-.merchant-npc .merchant-item { display: grid; grid-template-columns: 42px minmax(18rem, 1fr) minmax(5rem, auto) minmax(7rem, auto) auto; align-items: center; gap: .45rem; border-bottom: 1px solid var(--color-border-light-2); padding: .4rem 0; }
-.merchant-npc .merchant-item-gm { grid-template-columns: 42px minmax(24rem, 1fr) minmax(8rem, 9rem) minmax(10rem, 12rem) auto auto auto; min-width: 940px; }
+.merchant-npc .merchant-stock { list-style: none; margin: 0; padding: 0; display: grid; gap: .35rem; min-width: 650px; }
+.merchant-npc .merchant-item { display: grid; grid-template-columns: 42px minmax(9rem, 1fr) minmax(5rem, auto) minmax(7rem, auto) auto; align-items: center; gap: .45rem; border-bottom: 1px solid var(--color-border-light-2); padding: .4rem 0; }
+.merchant-npc .merchant-item-gm { grid-template-columns: 42px minmax(12rem, 1fr) 4.5rem 6.5rem auto auto auto; min-width: 730px; }
 .merchant-npc .merchant-item img { width: 36px; height: 36px; object-fit: cover; border: 0; }
 .merchant-npc .merchant-item-name { display: flex; flex-direction: column; min-width: 0; overflow: hidden; }
 .merchant-npc .merchant-item-name small, .merchant-npc .available-item-name small { opacity: .75; }
@@ -34,8 +34,16 @@
 .merchant-npc .purchase-button { min-width: 6rem; }
 .merchant-npc .icon-button { width: 2rem; }
 .merchant-open { margin: 0 .35rem; }
-.merchant-loading-dialog { border: 1px solid var(--color-border-light-2); border-radius: 6px; padding: 1.25rem 1.6rem; font-weight: 600; color: var(--color-text-primary); background: var(--color-cool-5); box-shadow: 0 4px 18px #0008; }
-.merchant-loading-dialog::backdrop { background: #0008; }
+.merchant-purchase-overlay { position: fixed; inset: 0; z-index: 100001; display: grid; place-items: center; padding: 1rem; background: #0009; }
+.merchant-purchase-dialog { display: grid; gap: .65rem; width: min(28rem, 100%); padding: 1rem; border: 1px solid var(--color-border-light-2); border-radius: 6px; color: var(--color-text-primary); background: var(--color-cool-5); box-shadow: 0 4px 18px #0009; }
+.merchant-purchase-dialog h2, .merchant-purchase-dialog p { margin: 0; }
+.merchant-purchase-dialog label { display: grid; gap: .25rem; }
+.merchant-purchase-dialog input { width: 7rem; }
+.merchant-purchase-dialog .purchase-total { font-weight: 700; }
+.merchant-purchase-dialog .purchase-status { min-height: 1.3em; }
+.merchant-purchase-dialog .purchase-dialog-actions { display: flex; justify-content: flex-end; gap: .5rem; }
+.merchant-loading-dialog { position: fixed; inset: 0; z-index: 100000; display: grid; place-items: center; padding: 1rem; background: #0008; }
+.merchant-loading-message { border: 1px solid var(--color-border-light-2); border-radius: 6px; padding: 1.25rem 1.6rem; font-weight: 600; color: var(--color-text-primary); background: var(--color-cool-5); box-shadow: 0 4px 18px #0008; }
 
 .merchant-item-browser { min-width: 760px; }
 .merchant-item-browser .window-content { padding: 0; overflow: hidden; }
