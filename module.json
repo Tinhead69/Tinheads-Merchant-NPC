@@ -2,10 +2,11 @@
   "id": "merchant-npc",
   "title": "Tinhead's Merchant NPC",
   "description": "A module to allow you to create usable Merchants with your game.",
-  "version": "0.1.21",
+  "version": "0.1.23",
   "url": "https://github.com/Tinhead69/Tinheads-Merchant-NPC",
   "manifest": "https://raw.githubusercontent.com/Tinhead69/Tinheads-Merchant-NPC/main/module.json",
-  "download": "https://github.com/Tinhead69/Tinheads-Merchant-NPC/archive/refs/heads/main.zip",
+  "download": "https://github.com/Tinhead69/Tinheads-Merchant-NPC/releases/download/v0.1.23/merchant-npc-0.1.23.zip",
+  "socket": true,
   "bugs": "https://github.com/Tinhead69/Tinheads-Merchant-NPC/issues",
   "compatibility": {
     "minimum": "13",
