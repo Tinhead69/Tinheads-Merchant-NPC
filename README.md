@@ -6,9 +6,9 @@ An installable Foundry VTT module for Foundry 13.351 and D&D 5e 5.0.0.
 
 Repository: [Tinhead69/Tinheads-Merchant-NPC](https://github.com/Tinhead69/Tinheads-Merchant-NPC)  
 Foundry manifest URL: `https://raw.githubusercontent.com/Tinhead69/Tinheads-Merchant-NPC/main/module.json`  
-Release download URL: `https://github.com/Tinhead69/Tinheads-Merchant-NPC/releases/download/v0.1.23/merchant-npc-0.1.23.zip`
+Release download URL: `https://github.com/Tinhead69/Tinheads-Merchant-NPC/archive/refs/heads/main.zip`
 
-This module uses Foundry's module socket namespace for player purchase requests. The manifest declares it with `"socket": true`; restart the world after installing or updating the module so Foundry registers the namespace.\n\nIn Foundry's **Install Module** screen, paste the manifest URL. For each release, create a GitHub release whose tag matches the version (for example, `v0.1.23`) and attach the ZIP with the exact filename shown in the release download URL above. Update the version and download URL in `module.json` for subsequent releases.
+This module uses Foundry's module socket namespace for player purchase requests. The manifest declares it with `"socket": true`; restart the world after installing or updating the module so Foundry registers the namespace.\n\nIn Foundry's **Install Module** screen, paste the manifest URL. The manifest download URL points to the repository main branch archive. Update the module version before distributing subsequent changes.
 
 ## Install
 
@@ -29,6 +29,7 @@ Copy the `merchant-npc` folder into your Foundry `Data/modules` directory, then 
 ## Notes
 
 This initial version handles the standard D&D 5e coin denominations (pp, gp, ep, sp, cp), converts currency to the exact copper value for affordability, and re-denominates the remaining balance. It assumes item prices use the standard denomination values and the `system.price.value` plus `system.price.denomination` data fields. It does not apply discounts, taxes, or quantity multipliers.
+
 
 
 
