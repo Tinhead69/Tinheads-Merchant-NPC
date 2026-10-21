@@ -319,7 +319,7 @@ async function commitPurchase({ actorId, buyerId, stockId, userId, quantity = 1 
   const merchant = game.actors.get(actorId), buyer = game.actors.get(buyerId), requestingUser = game.users.get(userId);
   if (!merchant || !buyer || !requestingUser || (!requestingUser.isGM && requestingUser.character?.id !== buyer.id)) return { success: false, message: "The selected buyer is not assigned to your user." };
   if (!requestingUser.isGM && !buyer.testUserPermission(requestingUser, CONST.DOCUMENT_OWNERSHIP_LEVELS.OWNER)) return { success: false, message: "You do not own that character." };
-  const stock = foundry.utils.deepClone(merchant.getFlag(MODULE_ID, "stock") ?? []), entry = stock.find(item => item.id === stockId);
+  let stock = foundry.utils.deepClone(merchant.getFlag(MODULE_ID, "stock") ?? []), entry = stock.find(item => item.id === stockId);
   const count = Math.floor(Number(quantity));
   if (!Number.isSafeInteger(count) || count < 1) return { success: false, message: "Choose a valid purchase quantity." };
   if (!entry || Number(entry.quantity) < count) return { success: false, message: `Only ${Math.max(0, Number(entry?.quantity) || 0)} available. Reduce the quantity.` };
@@ -329,23 +329,69 @@ async function commitPurchase({ actorId, buyerId, stockId, userId, quantity = 1 
   const unitCost = Math.round(Number(rawPrice) * coinValue);
   const cost = unitCost * count;
   if (!Number.isSafeInteger(unitCost) || unitCost < 0 || !Number.isSafeInteger(cost)) return { success: false, message: "This item has an invalid price." };
-  const buyerCurrency = buyer.system.currency ?? {}, merchantCurrency = merchant.system.currency ?? {};
+  let buyerCurrency = buyer.system.currency ?? {}, merchantCurrency = merchant.system.currency ?? {};
   if (copperValue(buyerCurrency) < cost) return { success: false, message: `Insufficient funds. Your current purse is ${currencyText(buyerCurrency)}; reduce the quantity.` };
   if (Number(rawPrice) === 0 && !await askZeroPriceApproval({ merchant, buyer, requestingUser, entry, quantity: count })) {
     return { success: false, message: "The DM rejected the zero-price purchase." };
   }
+  // The GM may have changed the listing while approving a free item. Re-read
+  // the live listing and reject if its price or available quantity changed.
+  stock = foundry.utils.deepClone(merchant.getFlag(MODULE_ID, "stock") ?? []);
+  entry = stock.find(item => item.id === stockId);
+  if (!entry || Number(entry.quantity) < count) return { success: false, message: `Only ${Math.max(0, Number(entry?.quantity) || 0)} available. Reduce the quantity.` };
+  const currentPrice = entry.system?.price ?? {};
+  const currentRawPrice = currentPrice.value ?? currentPrice.amount;
+  const currentDenomination = String(currentPrice.denomination ?? "gp").toLowerCase();
+  if (currentRawPrice === undefined || currentRawPrice === null || currentRawPrice === "" || Number(currentRawPrice) !== Number(rawPrice) || currentDenomination !== denomination) {
+    return { success: false, message: "The shop price changed while the purchase was being approved. Please try again." };
+  }
+  // Approval can take time; re-read the purse before committing so intervening
+  // actor changes are not overwritten by a stale currency snapshot.
+  buyerCurrency = buyer.system.currency ?? {};
+  merchantCurrency = merchant.system.currency ?? {};
+  if (copperValue(buyerCurrency) < cost) return { success: false, message: `Insufficient funds. Your current purse is ${currencyText(buyerCurrency)}; reduce the quantity.` };
+  const originalStock = foundry.utils.deepClone(merchant.getFlag(MODULE_ID, "stock") ?? []);
+  let createdItemIds = [];
+  let buyerUpdated = false;
+  let merchantUpdated = false;
+  let stockUpdated = false;
+  let stage = "loading the item data";
   try {
-    const sourceItem = entry.sourceUuid ? await fromUuid(entry.sourceUuid) : null;
+    let sourceItem = null;
+    if (entry.sourceUuid) {
+      try { sourceItem = await fromUuid(entry.sourceUuid); }
+      catch (error) { console.warn(`${MODULE_ID} | Could not resolve source item; using saved shop item data instead.`, error); }
+    }
     const itemData = sourceItem?.toObject?.() ?? { name: entry.name, type: entry.type, img: entry.img, system: foundry.utils.deepClone(entry.system ?? {}) };
     delete itemData._id;
+    delete itemData._stats;
     itemData.system ??= {};
     itemData.system.quantity = count;
-    await buyer.createEmbeddedDocuments("Item", [itemData]);
+    delete itemData.system._source;
+    stage = "adding the item to the character inventory";
+    const created = await buyer.createEmbeddedDocuments("Item", [itemData]);
+    createdItemIds = created.map(item => item.id);
+    stage = "deducting the character's money";
     await buyer.update({ "system.currency": currencyFromCopper(copperValue(buyerCurrency) - cost) });
+    buyerUpdated = true;
+    stage = "crediting the merchant's funds";
     await merchant.update({ "system.currency": currencyFromCopper(copperValue(merchantCurrency) + cost) });
-    entry.quantity = Number(entry.quantity) - count; await merchant.setFlag(MODULE_ID, "stock", stock);
+    merchantUpdated = true;
+    stage = "updating the shop stock";
+    entry.quantity = Number(entry.quantity) - count;
+    await merchant.setFlag(MODULE_ID, "stock", stock);
+    stockUpdated = true;
     return { success: true, message: `Purchased ${count} × ${entry.name} for ${copperText(cost)}.` };
-  } catch (error) { console.error(`${MODULE_ID} | Purchase failed`, error); return { success: false, message: "The purchase failed while updating the actors." }; }
+  } catch (error) {
+    console.error(`${MODULE_ID} | Purchase failed while ${stage}.`, error);
+    try {
+      if (stockUpdated) await merchant.setFlag(MODULE_ID, "stock", originalStock);
+      if (merchantUpdated) await merchant.update({ "system.currency": merchantCurrency });
+      if (buyerUpdated) await buyer.update({ "system.currency": buyerCurrency });
+      if (createdItemIds.length) await buyer.deleteEmbeddedDocuments("Item", createdItemIds);
+    } catch (rollbackError) { console.error(`${MODULE_ID} | Purchase rollback also failed.`, rollbackError); }
+    return { success: false, message: `The purchase failed while ${stage}: ${error.message ?? error}. No purchase should have been completed; check the GM console if the problem continues.` };
+  }
 }
 function requestPurchase(actorId, buyerId, stockId, quantity) {
   return new Promise(resolve => {
