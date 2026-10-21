@@ -7,6 +7,7 @@ const ITEM_CATEGORIES = [
   ["magic", "Magic Items"], ["equipment", "Normal Equipment"]
 ];
 const pendingPurchases = new Map();
+const cachedSourceItemData = new Map();
 // Keep the indexed catalog for this client session so reopening Add Items does
 // not repeat compendium indexing and item/description classification.
 let indexedCatalog = null;
@@ -275,7 +276,8 @@ async function processPurchase(request) {
 async function commitPurchase({ actorId, actorUuid, buyerId, stockId, userId, quantity = 1 }) {
   // A shop can be opened from an unlinked token, where its synthetic actor may
   // have different stock from the base world actor with the same actor id.
-  let merchant = actorUuid ? await fromUuid(actorUuid).catch(() => null) : null;
+  let merchant = actorUuid?.startsWith("Actor.") ? game.actors.get(actorId) : null;
+  if (!merchant && actorUuid) merchant = await fromUuid(actorUuid).catch(() => null);
   merchant ??= game.actors.get(actorId);
   const buyer = game.actors.get(buyerId), requestingUser = game.users.get(userId);
   if (!merchant || !buyer || !requestingUser || (!requestingUser.isGM && requestingUser.character?.id !== buyer.id)) return { success: false, message: "The selected buyer is not assigned to your user." };
@@ -292,38 +294,30 @@ async function commitPurchase({ actorId, actorUuid, buyerId, stockId, userId, qu
   if (!Number.isSafeInteger(unitCost) || unitCost < 0 || !Number.isSafeInteger(cost)) return { success: false, message: "This item has an invalid price." };
   let buyerCurrency = buyer.system.currency ?? {}, merchantCurrency = merchant.system.currency ?? {};
   if (copperValue(buyerCurrency) < cost) return { success: false, message: `Insufficient funds. Your current purse is ${currencyText(buyerCurrency)}; reduce the quantity.` };
-  // Re-read the live listing before committing so the transaction cannot use
-  // stale stock or price data from when the shop was first opened.
-  stock = foundry.utils.deepClone(merchant.getFlag(MODULE_ID, "stock") ?? []);
-  entry = stock.find(item => item.id === stockId);
-  if (!entry || Number(entry.quantity) < count) return { success: false, message: `Only ${Math.max(0, Number(entry?.quantity) || 0)} available. Reduce the quantity.` };
-  const currentPrice = entry.system?.price ?? {};
-  const currentRawPrice = currentPrice.value ?? currentPrice.amount;
-  const currentDenomination = String(currentPrice.denomination ?? "gp").toLowerCase();
-  if (currentRawPrice === undefined || currentRawPrice === null || currentRawPrice === "" || Number(currentRawPrice) !== Number(rawPrice) || currentDenomination !== denomination) {
-    return { success: false, message: "The shop price changed while the purchase was being approved. Please try again." };
-  }
-  // Approval can take time; re-read the purse before committing so intervening
-  // actor changes are not overwritten by a stale currency snapshot.
-  buyerCurrency = buyer.system.currency ?? {};
-  merchantCurrency = merchant.system.currency ?? {};
-  if (copperValue(buyerCurrency) < cost) return { success: false, message: `Insufficient funds. Your current purse is ${currencyText(buyerCurrency)}; reduce the quantity.` };
-  const originalStock = foundry.utils.deepClone(merchant.getFlag(MODULE_ID, "stock") ?? []);
+  const originalStock = foundry.utils.deepClone(stock);
   let createdItemIds = [];
   let buyerUpdated = false;
   let merchantUpdated = false;
   let stockUpdated = false;
   let stage = "loading the item data";
   try {
-    let sourceItem = null;
-    if (entry.sourceUuid) {
-      try { sourceItem = await fromUuid(entry.sourceUuid); }
-      catch (error) { console.warn(`${MODULE_ID} | Could not resolve source item; using saved shop item data instead.`, error); }
+    let itemData = entry.sourceData ? foundry.utils.deepClone(entry.sourceData) : null;
+    if (!itemData && entry.sourceUuid) {
+      try {
+        itemData = cachedSourceItemData.get(entry.sourceUuid);
+        if (!itemData) {
+          const sourceItem = await fromUuid(entry.sourceUuid);
+          itemData = sourceItem?.toObject?.() ?? null;
+          if (itemData) cachedSourceItemData.set(entry.sourceUuid, foundry.utils.deepClone(itemData));
+        }
+        if (itemData) itemData = foundry.utils.deepClone(itemData);
+      } catch (error) { console.warn(`${MODULE_ID} | Could not resolve source item; using saved shop item data instead.`, error); }
     }
-    const itemData = sourceItem?.toObject?.() ?? { name: entry.name, type: entry.type, img: entry.img, system: foundry.utils.deepClone(entry.system ?? {}) };
+    itemData ??= { name: entry.name, type: entry.type, img: entry.img, system: foundry.utils.deepClone(entry.system ?? {}) };
     delete itemData._id;
     delete itemData._stats;
     itemData.system ??= {};
+    itemData.system.price = foundry.utils.deepClone(entry.system?.price ?? itemData.system.price ?? {});
     itemData.system.quantity = count;
     delete itemData.system._source;
     stage = "adding the item to the character inventory";
@@ -332,12 +326,13 @@ async function commitPurchase({ actorId, actorUuid, buyerId, stockId, userId, qu
     stage = "deducting the character's money";
     await buyer.update({ "system.currency": currencyFromCopper(copperValue(buyerCurrency) - cost) });
     buyerUpdated = true;
-    stage = "crediting the merchant's funds";
-    await merchant.update({ "system.currency": currencyFromCopper(copperValue(merchantCurrency) + cost) });
-    merchantUpdated = true;
-    stage = "updating the shop stock";
+    stage = "updating merchant funds and shop stock";
     entry.quantity = Number(entry.quantity) - count;
-    await merchant.setFlag(MODULE_ID, "stock", stock);
+    await merchant.update({
+      "system.currency": currencyFromCopper(copperValue(merchantCurrency) + cost),
+      [`flags.${MODULE_ID}.stock`]: stock
+    });
+    merchantUpdated = true;
     stockUpdated = true;
     const escape = value => foundry.utils.escapeHTML(String(value ?? ""));
     const gmIds = game.users.filter(user => user.isGM).map(user => user.id);
@@ -347,8 +342,7 @@ async function commitPurchase({ actorId, actorUuid, buyerId, stockId, userId, qu
   } catch (error) {
     console.error(`${MODULE_ID} | Purchase failed while ${stage}.`, error);
     try {
-      if (stockUpdated) await merchant.setFlag(MODULE_ID, "stock", originalStock);
-      if (merchantUpdated) await merchant.update({ "system.currency": merchantCurrency });
+      if (stockUpdated || merchantUpdated) await merchant.update({ "system.currency": merchantCurrency, [`flags.${MODULE_ID}.stock`]: originalStock });
       if (buyerUpdated) await buyer.update({ "system.currency": buyerCurrency });
       if (createdItemIds.length) await buyer.deleteEmbeddedDocuments("Item", createdItemIds);
     } catch (rollbackError) { console.error(`${MODULE_ID} | Purchase rollback also failed.`, rollbackError); }
@@ -430,8 +424,15 @@ class MerchantSheet extends HandlebarsApplicationMixin(ApplicationV2) {
     const stock = foundry.utils.deepClone(this.actor.getFlag(MODULE_ID, "stock") ?? []);
     const sourceUuid = source._stats?.compendiumSource ?? source.uuid ?? (source._id ? `Item.${source._id}` : `${source.type}:${source.name}`);
     const existing = stock.find(item => item.sourceUuid === sourceUuid || (!item.sourceUuid && item.name === source.name && item.type === source.type));
-    if (existing) existing.quantity = Number(existing.quantity ?? 0) + quantity;
-    else stock.push({ id: foundry.utils.randomID(), name: source.name, img: source.img ?? "icons/svg/item-bag.svg", type: source.type, system: foundry.utils.deepClone(source.system ?? {}), sourceUuid, quantity });
+    const sourceData = foundry.utils.deepClone(source);
+    delete sourceData._id;
+    delete sourceData._stats;
+    delete sourceData.uuid;
+    if (existing) {
+      existing.quantity = Number(existing.quantity ?? 0) + quantity;
+      existing.sourceData ??= sourceData;
+    }
+    else stock.push({ id: foundry.utils.randomID(), name: source.name, img: source.img ?? "icons/svg/item-bag.svg", type: source.type, system: foundry.utils.deepClone(source.system ?? {}), sourceData, sourceUuid, quantity });
     await this.actor.setFlag(MODULE_ID, "stock", stock);
     await this.actor.setFlag(MODULE_ID, "isShop", true);
     this.render();
