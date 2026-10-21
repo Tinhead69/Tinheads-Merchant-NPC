@@ -12,7 +12,7 @@ This module uses Foundry's module socket namespace for player purchase requests.
 
 ## Install
 
-Copy the `merchant-npc` folder into your Foundry `Data/modules` directory, then enable **Merchant NPC** in the world's Manage Modules window. If packaging for a module manifest, zip the contents with `module.json` at the archive root.
+Copy the `merchant-npc` folder into your Foundry `Data/modules` directory, then enable **Merchant NPC** in the world's Manage Modules window. When packaging, keep the `merchant-npc` folder at the archive root, matching the GitHub source archive layout.
 
 ## Use
 
@@ -29,6 +29,7 @@ Copy the `merchant-npc` folder into your Foundry `Data/modules` directory, then 
 ## Notes
 
 This initial version handles the standard D&D 5e coin denominations (pp, gp, ep, sp, cp), converts currency to the exact copper value for affordability, and re-denominates the remaining balance. It assumes item prices use the standard denomination values and the `system.price.value` plus `system.price.denomination` data fields. It does not apply discounts, taxes, or quantity multipliers.
+
 
 
 
