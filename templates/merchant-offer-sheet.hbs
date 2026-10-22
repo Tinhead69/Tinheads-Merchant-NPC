@@ -1,0 +1,21 @@
+<section class="merchant-offer-layout">
+  <p><strong>{{characterName}}</strong> wishes to sell these items to {{merchantName}}. Choose what the merchant will buy and set an offer for each item.</p>
+  {{#if hasRollSummary}}<p class="merchant-sale-roll-summary">{{rollSummary}}</p>{{/if}}
+  <p>Merchant funds available: {{funds}} ({{fundsTotal}} total)</p>
+  <div class="merchant-gm-sale-lines">
+    {{#each items as |item|}}
+      <div class="merchant-gm-sale-line" data-item-id="{{item.itemId}}" data-quantity="{{item.quantity}}">
+        <input type="checkbox" name="includeItem" aria-label="Buy {{item.name}}" {{#if item.selected}}checked{{/if}}>
+        <div><strong>{{item.quantity}} × {{item.name}}</strong><small>Character's value: {{item.valueText}}{{item.valueTotal}}</small></div>
+        <label>Offer each (gp)<input type="number" name="offerGp" min="0" step="0.01" value="{{item.offerGp}}"></label>
+      </div>
+    {{/each}}
+  </div>
+  <label>Bonus advised for {{characterName}}'s Persuasion roll<input type="number" name="persuasionBonus" step="1" value="{{persuasionBonus}}"></label>
+  <p class="merchant-sale-total"></p>
+  <p class="merchant-sale-status"></p>
+  <footer class="merchant-sale-sheet-actions">
+    <button type="button" data-action="cancel">{{keepLabel}}</button>
+    <button type="button" data-action="submit">{{submitLabel}}</button>
+  </footer>
+</section>
