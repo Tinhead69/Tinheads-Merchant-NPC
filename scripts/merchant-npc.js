@@ -641,7 +641,7 @@ async function sendSaleOffer(sale, { outcome = "", persuasionUsed = false } = {}
     content: "", whisper: [sale.requesterId],
     flags: { [MODULE_ID]: { saleOffer: {
       requestId: sale.request.requestId, recipientId: sale.requesterId, buyerId: sale.buyer.id, buyerName: sale.buyer.name, merchantName: sale.merchant.name,
-      lines, totalCopper, persuasionBonus: sale.persuasionBonus, persuasionUsed, outcome
+      lines, totalCopper, persuasionUsed, outcome
     } } }
   });
 }
@@ -672,14 +672,14 @@ async function processSaleRequest(request, authenticatedUserId) {
     items.push({ itemId: item.id, name: item.name, img: item.img, type: item.type, quantity, available: itemQuantity(item), unitValueCopper, valueText: unitValueCopper === null ? "Value not set" : priceLabel(item.system?.price ?? {}), sourceData: itemData });
   }
   if (!items.length) return saleResultToPlayer(authenticatedUserId, request.requestId, { success: false, message: "None of those items are still available in the character's inventory." });
-  const sale = { request, requester, requesterId: authenticatedUserId, buyer, merchant, items, currentOffer: null, persuasionBonus: 0, persuasionUsed: false };
+  const sale = { request, requester, requesterId: authenticatedUserId, buyer, merchant, items, currentOffer: null, persuasionUsed: false };
   pendingSales.set(request.requestId, sale);
   const offer = await promptGmSaleOffer(sale);
   if (!offer) {
     pendingSales.delete(request.requestId);
     return saleResultToPlayer(authenticatedUserId, request.requestId, { success: false, message: "The merchant declined to review this sale." });
   }
-  sale.currentOffer = offer; sale.persuasionBonus = offer.persuasionBonus;
+  sale.currentOffer = offer;
   await sendSaleOffer(sale);
 }
 function showPlayerSaleOffer(offer) {
@@ -695,13 +695,12 @@ function showPlayerSaleOffer(offer) {
     row.append(image, details); list.append(row);
   }
   const total = document.createElement("p"); total.className = "merchant-sale-total"; total.textContent = `Total offered: ${goldText(offer.totalCopper)}`;
-  const bonus = document.createElement("p"); bonus.textContent = `GM-advised Persuasion bonus: ${offer.persuasionBonus >= 0 ? "+" : ""}${offer.persuasionBonus}`;
   const status = document.createElement("p"); status.className = "merchant-sale-status";
   const actions = document.createElement("div"); actions.className = "purchase-dialog-actions";
   const accept = document.createElement("button"); accept.type = "button"; accept.textContent = "Accept Offer";
   const persuade = document.createElement("button"); persuade.type = "button"; persuade.textContent = "Try Persuasion"; persuade.disabled = Boolean(offer.persuasionUsed);
   const decline = document.createElement("button"); decline.type = "button"; decline.textContent = "Decline";
-  actions.append(accept, persuade, decline); panel.append(list, total, bonus, status, actions);
+  actions.append(accept, persuade, decline); panel.append(list, total, status, actions);
   const close = () => overlay.remove();
   const send = async response => {
     for (const button of actions.querySelectorAll("button")) button.disabled = true;
@@ -721,22 +720,33 @@ function showPlayerSaleOffer(offer) {
   decline.addEventListener("click", () => void send({ action: "decline" }));
   persuade.addEventListener("click", async () => {
     persuade.disabled = true;
-    status.textContent = "Rolling Persuasion…";
+    status.textContent = "Opening Foundry's Persuasion roll…";
     const actor = game.user.character;
     if (!actor || actor.id !== offer.buyerId) {
       status.textContent = "Your assigned character changed. Reopen the shop offer using the character who submitted the items.";
       persuade.disabled = false;
       return;
     }
-    const skill = actor?.system.skills?.per;
-    const ability = actor?.system.abilities?.[skill?.ability ?? "cha"];
-    const prof = Number(actor?.system.attributes?.prof ?? 0);
-    const proficiency = Number(skill?.value ?? 0);
-    const skillBonus = Number(skill?.total ?? skill?.mod ?? (Number(ability?.mod ?? 0) + prof * proficiency));
-    const bonusValue = Number(offer.persuasionBonus) || 0;
+    let hookedRoll = null;
+    const existingMessageIds = new Set(game.messages.map(message => message.id));
+    const hookId = Hooks.on("dnd5e.rollSkill", (rolls, data) => {
+      if (data?.skill !== "per" || data?.subject?.uuid !== actor.uuid) return;
+      hookedRoll = rolls?.find(roll => Number.isFinite(roll?.total)) ?? null;
+    });
     try {
-      const roll = await new Roll(`1d20 + (${skillBonus}) + (${bonusValue})`).evaluate();
-      const rollMessage = await roll.toMessage({ speaker: ChatMessage.getSpeaker({ actor }), flavor: `Persuasion to negotiate with ${offer.merchantName}` });
+      await actor.rollSkill({ skill: "per" });
+      if (!hookedRoll) {
+        status.textContent = "The Persuasion roll was cancelled. You can accept or decline the offer.";
+        persuade.disabled = false;
+        return;
+      }
+      const rollMessage = [...game.messages]
+        .filter(message => !existingMessageIds.has(message.id)
+          && (message.author?.id ?? message.user?.id) === game.user.id
+          && message.speaker?.actor === actor.id
+          && message.rolls?.some(roll => Number.isFinite(roll?.total) && roll.total === hookedRoll.total))
+        .sort((a, b) => b.timestamp - a.timestamp)[0];
+      if (!rollMessage) throw new Error("Could not find the Foundry skill-roll message.");
       await rollMessage.update({ [`flags.${MODULE_ID}.persuasionRoll`]: { requestId: offer.requestId, actorId: actor.id } });
       const activeGM = game.users.activeGM;
       if (!activeGM) throw new Error("No active GM is connected.");
@@ -746,6 +756,8 @@ function showPlayerSaleOffer(offer) {
       console.error(`${MODULE_ID} | Persuasion roll failed.`, error);
       status.textContent = "The Persuasion roll could not be sent. You can accept or decline the offer.";
       persuade.disabled = false;
+    } finally {
+      Hooks.off("dnd5e.rollSkill", hookId);
     }
   });
   overlay.addEventListener("click", event => { if (event.target === overlay) close(); });
@@ -791,7 +803,7 @@ async function processSaleResponse(response, authenticatedUserId) {
   if (rollTotal > insightRoll.total) {
     const rollSummary = `${sale.buyer.name} Persuasion: ${rollTotal}. ${sale.merchant.name} Insight: ${insightRoll.total}. The character won and may receive a revised offer.`;
     const revised = await promptGmSaleOffer(sale, { previous: sale.currentOffer, rollSummary });
-    if (revised && !revised.keep) { sale.currentOffer = revised; sale.persuasionBonus = revised.persuasionBonus; }
+    if (revised && !revised.keep) sale.currentOffer = revised;
     await sendSaleOffer(sale, { outcome: "Your Persuasion check succeeded. The merchant is reconsidering the offer.", persuasionUsed: true });
   } else {
     const rollSummary = `${sale.buyer.name} Persuasion: ${rollTotal}. ${sale.merchant.name} Insight: ${insightRoll.total}. The merchant held firm; the offer is unchanged.`;
@@ -896,7 +908,6 @@ class MerchantOfferSheet extends HandlebarsApplicationMixin(ApplicationV2) {
           valueTotal: record.unitValueCopper === null ? "" : ` each; ${copperText(record.unitValueCopper * record.quantity)} total`
         };
       }),
-      persuasionBonus: this.previous?.persuasionBonus ?? this.sale.persuasionBonus ?? 0,
       keepLabel: this.previous ? "Keep Current Offer" : "Cancel Sale",
       submitLabel: this.previous ? "Send Revised Offer" : "Send Offer"
     };
@@ -923,7 +934,7 @@ class MerchantOfferSheet extends HandlebarsApplicationMixin(ApplicationV2) {
       if (status) status.textContent = !selected ? "Select at least one item to make an offer." : !valid ? "Enter valid non-negative offers." : offerTotal > purse ? "The merchant does not have enough funds for this offer." : `${this.sale.buyer.name} will be asked to accept or negotiate this offer.`;
       if (submit) submit.disabled = !selected || !valid || offerTotal > purse;
     };
-    this.element.querySelectorAll(".merchant-gm-sale-line input, [name='persuasionBonus']").forEach(input => {
+    this.element.querySelectorAll(".merchant-gm-sale-line input").forEach(input => {
       input.addEventListener("input", calculate);
       input.addEventListener("change", calculate);
     });
@@ -947,9 +958,8 @@ class MerchantOfferSheet extends HandlebarsApplicationMixin(ApplicationV2) {
       const offerCopper = Math.round(Number(row.querySelector("[name='offerGp']")?.value) * CURRENCY.gp);
       lines.push({ itemId: row.dataset.itemId, quantity: Number(row.dataset.quantity), offerCopper });
     }
-    const persuasionBonus = Number(this.element.querySelector("[name='persuasionBonus']")?.value ?? 0);
-    if (!lines.length || !Number.isSafeInteger(persuasionBonus)) return;
-    this.finish({ lines, persuasionBonus });
+    if (!lines.length) return;
+    this.finish({ lines });
   }
 }
 
