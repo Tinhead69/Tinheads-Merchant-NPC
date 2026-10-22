@@ -169,6 +169,15 @@
 .merchant-npc .table-generator > h3 { font-size: 1.05rem; }
 .merchant-npc .merchant-stock-area { gap: .3rem; }
 .merchant-npc .merchant-stock-area > h3 { margin: 0; }
+.merchant-npc .merchant-stock-controls { display: grid; grid-template-columns: minmax(14rem, 1fr) minmax(0, 2fr) auto; align-items: center; gap: .45rem; }
+.merchant-npc .merchant-stock-search { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: .4rem; min-width: 0; }
+.merchant-npc .merchant-stock-search input { min-width: 0; min-height: 1.9rem; }
+.merchant-npc .merchant-stock-filters { display: flex; flex-wrap: wrap; gap: .25rem; min-width: 0; }
+.merchant-npc .merchant-stock-filter { min-height: 1.75rem; padding: .18rem .4rem; font-size: .82em; white-space: nowrap; }
+.merchant-npc .merchant-stock-filter.active { border-color: #d6b66f; background: linear-gradient(#70400f, #311d10); color: #fff8e9; }
+.merchant-npc .merchant-stock-filter span { margin-left: .15rem; color: #e4cea0; font-size: .9em; }
+.merchant-npc .merchant-stock-results { margin: 0; color: #d4c6bb; font-size: .82em; white-space: nowrap; }
+.merchant-npc .merchant-stock > [hidden] { display: none !important; }
 .merchant-npc .merchant-heading .merchant-sell-open { margin-left: auto; min-width: 9rem; min-height: 2.6rem; padding: .45rem .8rem; border: 1px solid var(--merchant-brass); background: linear-gradient(180deg, #a94b13, #6f2b05); color: #fff4e4; font-size: 1rem; font-weight: 700; box-shadow: 0 0 0 1px #0008, inset 0 1px #ffffff25; }
 .merchant-npc .merchant-heading .merchant-sell-open:hover { background: linear-gradient(180deg, #c45b1a, #873707); }
 .merchant-sell-sheet .window-content { padding: 0; }
@@ -181,9 +190,9 @@
 .merchant-sell-sheet .merchant-sale-list li > label { margin: 0; }
 .merchant-sale-sheet-actions { display: flex; justify-content: flex-end; gap: .5rem; padding-top: .5rem; border-top: 1px solid var(--merchant-rule); }
 .merchant-offer-sheet .window-content { padding: 0; }
-.merchant-offer-layout { display: grid; grid-template-rows: auto auto auto minmax(0, 1fr) auto auto auto; gap: .55rem; height: 100%; min-height: 0; padding: .75rem; }
+.merchant-offer-layout { display: grid; grid-template-rows: auto; align-content: start; gap: .55rem; height: 100%; min-height: 0; padding: .75rem; }
 .merchant-offer-layout > p { margin: 0; }
-.merchant-offer-layout .merchant-gm-sale-lines { max-height: none; min-height: 5rem; }
+.merchant-offer-layout .merchant-gm-sale-lines { max-height: 35vh; min-height: 0; align-content: start; grid-auto-rows: min-content; overflow: auto; }
 .merchant-offer-layout > label { max-width: 20rem; }
 .merchant-offer-layout .merchant-gm-sale-line > div { min-width: 0; }
 .merchant-offer-layout .merchant-gm-sale-line strong { overflow-wrap: anywhere; }
@@ -283,6 +292,9 @@
 .merchant-approval-card button:hover { border-color: #d6b66f; background: linear-gradient(#70400f, #311d10); }
 
 @media (max-width: 760px) {
+  .merchant-npc .merchant-stock-controls { grid-template-columns: 1fr; }
+  .merchant-npc .merchant-stock-search { grid-template-columns: 1fr; }
+  .merchant-npc .merchant-stock-results { justify-self: end; }
   .merchant-npc .merchant-item,
   .merchant-npc .merchant-item-gm { grid-template-columns: 32px minmax(6rem, 1fr) auto auto; }
   .merchant-npc .merchant-item-gm .stock-field,

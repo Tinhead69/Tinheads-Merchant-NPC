@@ -1032,6 +1032,8 @@ class MerchantSheet extends HandlebarsApplicationMixin(ApplicationV2) {
     super({ ...options, id: `merchant-npc-${actor.id}` });
     this.actor = actor;
     this.shopType = actor.getFlag(MODULE_ID, "shopType") ?? "general";
+    this.stockSearch = "";
+    this.stockTypeFilter = "all";
   }
   static DEFAULT_OPTIONS = {
     id: "merchant-npc", tag: "form", classes: ["merchant-npc"], window: { title: "Merchant Shop", resizable: true }, position: { width: 1000, height: 720 },
@@ -1057,18 +1059,50 @@ class MerchantSheet extends HandlebarsApplicationMixin(ApplicationV2) {
       input.addEventListener("input", updatePriceColor);
       updatePriceColor();
     }
+    const searchInput = this.element.querySelector("[name='stockSearch']");
+    searchInput?.addEventListener("input", () => {
+      this.stockSearch = searchInput.value;
+      this.#filterStock();
+    });
+    for (const button of this.element.querySelectorAll("[data-stock-type-filter]")) {
+      button.addEventListener("click", () => {
+        this.stockTypeFilter = button.dataset.stockTypeFilter;
+        for (const filterButton of this.element.querySelectorAll("[data-stock-type-filter]")) {
+          const active = filterButton === button;
+          filterButton.classList.toggle("active", active);
+          filterButton.setAttribute("aria-pressed", String(active));
+        }
+        this.#filterStock();
+      });
+    }
+    this.#filterStock();
   }
   get title() { return `${this.actor.name} — ${SHOP_TYPES[this.shopType] ?? SHOP_TYPES.general}`; }
   async _prepareContext() {
     this.shopType = this.actor.getFlag(MODULE_ID, "shopType") ?? this.shopType ?? "general";
-    const stock = this.actor.getFlag(MODULE_ID, "stock") ?? [];
+    const stock = (this.actor.getFlag(MODULE_ID, "stock") ?? []).map(item => {
+      const price = item.system?.price;
+      const hasPrice = price?.value !== undefined && price?.value !== null && price?.value !== "";
+      const type = String(item.type ?? "other");
+      const description = tooltipText(item.system?.description?.value ?? item.system?.description ?? "");
+      return {
+        ...item, type, typeLabel: type.charAt(0).toUpperCase() + type.slice(1), description,
+        searchText: `${item.name ?? ""} ${type} ${description}`.toLocaleLowerCase(),
+        hasPrice, priceMissing: !hasPrice, priceZero: !hasPrice || Number(price.value) === 0,
+        priceText: hasPrice ? priceLabel(price) : "Price not set", denomination: price?.denomination ?? "gp"
+      };
+    });
+    const stockTypes = [...new Set(stock.map(item => item.type))]
+      .sort((a, b) => a.localeCompare(b))
+      .map(value => ({ value, label: value.charAt(0).toUpperCase() + value.slice(1), count: stock.filter(item => item.type === value).length, active: value === this.stockTypeFilter }));
+    if (this.stockTypeFilter !== "all" && !stockTypes.some(type => type.value === this.stockTypeFilter)) this.stockTypeFilter = "all";
     return {
       actor: this.actor,
-      stock: stock.map(item => {
-        const price = item.system?.price;
-        const hasPrice = price?.value !== undefined && price?.value !== null && price?.value !== "";
-        return { ...item, hasPrice, priceMissing: !hasPrice, priceZero: !hasPrice || Number(price.value) === 0, priceText: hasPrice ? priceLabel(price) : "Price not set", denomination: price?.denomination ?? "gp", description: tooltipText(item.system?.description?.value ?? item.system?.description ?? "") };
-      }),
+      stock,
+      stockTypes,
+      stockSearch: this.stockSearch,
+      stockTypeFilter: this.stockTypeFilter,
+      allStockTypesActive: this.stockTypeFilter === "all",
       isGM: game.user.isGM,
       shopTypeLabel: SHOP_TYPES[this.shopType] ?? SHOP_TYPES.general,
       shopType: this.shopType,
@@ -1080,6 +1114,22 @@ class MerchantSheet extends HandlebarsApplicationMixin(ApplicationV2) {
       }),
       floatHint: this.shopType === "jeweller" ? "Jeweller starting floats multiply preset and custom amounts by ten." : "Choose a starting purse in gold pieces."
     };
+  }
+  #filterStock() {
+    if (!this.element) return;
+    const query = this.stockSearch.trim().toLocaleLowerCase();
+    const rows = [...this.element.querySelectorAll("[data-stock-item]")];
+    let visible = 0;
+    for (const row of rows) {
+      const matches = (this.stockTypeFilter === "all" || row.dataset.stockType === this.stockTypeFilter)
+        && (!query || row.dataset.stockSearch.includes(query));
+      row.hidden = !matches;
+      if (matches) visible++;
+    }
+    const resultCount = this.element.querySelector("[data-stock-result-count]");
+    if (resultCount) resultCount.textContent = String(visible);
+    const noMatches = this.element.querySelector("[data-stock-no-matches]");
+    if (noMatches) noMatches.hidden = visible > 0 || rows.length === 0;
   }
   #funds() { const c = this.actor.system.currency ?? {}; return Object.entries(CURRENCY).map(([k]) => `${k}: ${Number(c[k] ?? 0)}`).join(" · "); }
   static async #onSubmit() {}
