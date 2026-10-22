@@ -8,6 +8,7 @@ const ITEM_CATEGORIES = [
 ];
 const pendingPurchases = new Map();
 const pendingApprovals = new Map();
+const pendingSales = new Map();
 const cachedSourceItemData = new Map();
 const catalogSubscribers = new Set();
 // Keep the indexed catalog for this client session so reopening Add Items does
@@ -51,7 +52,20 @@ function getConfiguredShopActor(token) {
   const baseActor = token?.document?.actorId ? game.actors.get(token.document.actorId) : null;
   return isConfiguredShop(baseActor) ? baseActor : tokenActor;
 }
-function stripHTML(value = "") { const template = document.createElement("template"); template.innerHTML = String(value); return (template.content.textContent ?? "").trim(); }
+function tooltipText(value = "") {
+  const template = document.createElement("template");
+  template.innerHTML = String(value);
+  template.content.querySelectorAll("br").forEach(node => node.replaceWith("\n"));
+  template.content.querySelectorAll("p, div, li, h1, h2, h3, h4, h5, h6, blockquote, tr").forEach(node => {
+    node.prepend(document.createTextNode("\n"));
+    node.append(document.createTextNode("\n"));
+  });
+  return (template.content.textContent ?? "")
+    .replace(/[ \t]*\n[ \t]*/g, "\n")
+    .replace(/[ \t]{2,}/g, " ")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
 function hasMagicalProperty(properties) {
   if (properties instanceof Set || properties instanceof Map) properties = [...properties.keys()];
   if (Array.isArray(properties)) return properties.some(value => ["magical", "mgc"].includes(String(value?.key ?? value?.id ?? value).toLowerCase()));
@@ -133,6 +147,38 @@ Hooks.once("ready", () => {
   Hooks.on("canvasReady", installTokenDoubleClick);
   installTokenDoubleClick();
   Hooks.on("createChatMessage", async (message, _options, userId) => {
+    const saleRequest = message.getFlag(MODULE_ID, "saleRequest");
+    if (saleRequest && game.user.isGM && game.users.activeGM?.id === game.user.id) {
+      await message.delete().catch(error => console.warn(`${MODULE_ID} | Could not remove the private sale transport message.`, error));
+      try { await processSaleRequest(saleRequest, userId); }
+      catch (error) {
+        console.error(`${MODULE_ID} | Sale request failed.`, error);
+        await saleResultToPlayer(userId, saleRequest.requestId, { success: false, message: "The sale request could not be processed. Check the GM console." });
+      }
+      return;
+    }
+    const saleResponse = message.getFlag(MODULE_ID, "saleResponse");
+    if (saleResponse && game.user.isGM && game.users.activeGM?.id === game.user.id) {
+      await message.delete().catch(error => console.warn(`${MODULE_ID} | Could not remove the private sale response message.`, error));
+      try { await processSaleResponse(saleResponse, userId); }
+      catch (error) {
+        console.error(`${MODULE_ID} | Sale response failed.`, error);
+        const pending = pendingSales.get(saleResponse.requestId);
+        if (pending) await sendSaleOffer(pending, { outcome: "The negotiation could not be processed; the current offer still stands.", persuasionUsed: true });
+      }
+      return;
+    }
+    const saleOffer = message.getFlag(MODULE_ID, "saleOffer");
+    if (saleOffer?.recipientId === game.user.id && game.users.get(userId)?.isGM) {
+      void showPlayerSaleOffer(saleOffer);
+      return;
+    }
+    const saleResult = message.getFlag(MODULE_ID, "saleResult");
+    if (saleResult?.recipientId === game.user.id && game.users.get(userId)?.isGM) {
+      if (saleResult.result?.success) ui.notifications.info(saleResult.result.message);
+      else ui.notifications.warn(saleResult.result?.message ?? "The sale could not be completed.");
+      return;
+    }
     const request = message.getFlag(MODULE_ID, "purchaseRequest");
     if (request && game.user.isGM && game.users.activeGM?.id === game.user.id) {
       // The create hook's userId is supplied by Foundry for the authenticated
@@ -244,6 +290,114 @@ function currencyText(currency = {}) {
 }
 function copperText(amount) {
   return Object.entries(currencyFromCopper(amount)).filter(([, value]) => value > 0).map(([key, value]) => `${value} ${key}`).join(", ") || "0 cp";
+}
+function goldText(amount) {
+  const gold = Number(amount) / CURRENCY.gp;
+  return `${gold.toFixed(2).replace(/\.00$/, "").replace(/(\.\d)0$/, "$1")} gp`;
+}
+function itemQuantity(item) {
+  const quantity = item?.system?.quantity;
+  return Math.max(0, Math.floor(Number(quantity?.value ?? quantity) || 0));
+}
+function itemPriceCopper(item) {
+  const price = item?.system?.price ?? {};
+  const raw = price.value ?? price.amount;
+  const denomination = String(price.denomination ?? price.currency ?? "gp").toLowerCase();
+  if (raw === undefined || raw === null || raw === "" || !CURRENCY[denomination] || !Number.isFinite(Number(raw))) return null;
+  return Math.max(0, Math.round(Number(raw) * CURRENCY[denomination]));
+}
+function saleOverlay(title, className = "") {
+  const overlay = document.createElement("div");
+  overlay.className = `merchant-purchase-overlay merchant-sale-overlay ${className}`.trim();
+  overlay.setAttribute("role", "dialog");
+  overlay.setAttribute("aria-modal", "true");
+  const panel = document.createElement("section");
+  panel.className = "merchant-purchase-dialog merchant-sale-dialog";
+  const heading = document.createElement("h2");
+  heading.textContent = title;
+  panel.append(heading);
+  overlay.append(panel);
+  document.body.append(overlay);
+  return { overlay, panel };
+}
+function promptSellItems(actor, merchant) {
+  return new Promise(resolve => {
+    const { overlay, panel } = saleOverlay(`Sell items to ${merchant.name}`, "merchant-sale-picker");
+    const instructions = document.createElement("p");
+    instructions.textContent = "Drag items from your inventory into the box below. Set the quantity for each item, then send the list to the merchant.";
+    const dropArea = document.createElement("div");
+    dropArea.className = "merchant-sale-drop-area";
+    dropArea.textContent = "Drop inventory items here";
+    const list = document.createElement("ul");
+    list.className = "merchant-sale-list";
+    const status = document.createElement("p");
+    status.className = "merchant-sale-status";
+    const actions = document.createElement("div");
+    actions.className = "purchase-dialog-actions";
+    const cancel = document.createElement("button");
+    cancel.type = "button";
+    cancel.textContent = "Cancel";
+    const submit = document.createElement("button");
+    submit.type = "button";
+    submit.textContent = "Confirm Items";
+    submit.disabled = true;
+    actions.append(cancel, submit);
+    panel.append(instructions, dropArea, list, status, actions);
+    const staged = new Map();
+    const close = result => { overlay.remove(); resolve(result); };
+    const render = () => {
+      list.replaceChildren();
+      for (const record of staged.values()) {
+        const row = document.createElement("li");
+        const image = document.createElement("img"); image.src = record.item.img; image.alt = "";
+        const name = document.createElement("strong"); name.textContent = record.item.name;
+        const value = document.createElement("small"); value.textContent = itemPriceCopper(record.item) === null ? "Value not set" : `Value ${priceLabel(record.item.system?.price ?? {})} each`;
+        const quantity = document.createElement("input"); quantity.type = "number"; quantity.min = "1"; quantity.max = String(record.available); quantity.step = "1"; quantity.value = String(record.quantity); quantity.setAttribute("aria-label", `Quantity of ${record.item.name}`);
+        quantity.addEventListener("change", () => { record.quantity = Math.max(1, Math.min(record.available, Math.floor(Number(quantity.value) || 1))); quantity.value = String(record.quantity); });
+        const remove = document.createElement("button"); remove.type = "button"; remove.textContent = "Remove";
+        remove.addEventListener("click", () => { staged.delete(record.item.id); render(); });
+        const details = document.createElement("div"); details.append(name, value);
+        row.append(image, details, quantity, remove); list.append(row);
+      }
+      submit.disabled = staged.size === 0;
+      status.textContent = staged.size ? `${staged.size} item type${staged.size === 1 ? "" : "s"} ready to send.` : "No items selected yet.";
+    };
+    dropArea.addEventListener("dragover", event => { event.preventDefault(); dropArea.classList.add("drag-active"); });
+    dropArea.addEventListener("dragleave", () => dropArea.classList.remove("drag-active"));
+    dropArea.addEventListener("drop", async event => {
+      event.preventDefault(); dropArea.classList.remove("drag-active");
+      let data;
+      try { data = TextEditor.getDragEventData(event); } catch { data = null; }
+      if (data?.type !== "Item" || !data.uuid) return ui.notifications.warn("Drop an item from your character's inventory.");
+      const item = await fromUuid(data.uuid).catch(() => null);
+      if (!item || item.parent?.id !== actor.id || !actor.items.has(item.id)) return ui.notifications.warn("Only items in your assigned character's inventory can be sold.");
+      const available = itemQuantity(item);
+      if (!available) return ui.notifications.warn(`${item.name} has no sellable quantity.`);
+      const existing = staged.get(item.id);
+      staged.set(item.id, { item, available, quantity: Math.min(available, (existing?.quantity ?? 0) + 1) });
+      render();
+    });
+    cancel.addEventListener("click", () => close(null));
+    submit.addEventListener("click", () => close([...staged.values()].map(record => ({ itemId: record.item.id, quantity: record.quantity }))));
+    overlay.addEventListener("click", event => { if (event.target === overlay) close(null); });
+    overlay.addEventListener("keydown", event => { if (event.key === "Escape") close(null); });
+    render();
+  });
+}
+async function requestSale(actor, merchant, items) {
+  const activeGM = game.users.activeGM;
+  if (!activeGM) return ui.notifications.warn("An active GM must be connected to review sale offers.");
+  const requestId = foundry.utils.randomID();
+  try {
+    await ChatMessage.create({
+      content: "", whisper: [activeGM.id],
+      flags: { [MODULE_ID]: { saleRequest: { requestId, merchantId: merchant.id, merchantUuid: merchant.uuid, buyerId: actor.id, items } } }
+    });
+    ui.notifications.info("Your items have been sent to the merchant for an offer.");
+  } catch (error) {
+    console.error(`${MODULE_ID} | Could not send sale request.`, error);
+    ui.notifications.error("The sale request could not be sent to the GM.");
+  }
 }
 function promptPurchase({ item, buyer, stockEntry }) {
   return new Promise(resolve => {
@@ -523,6 +677,279 @@ function requestPurchase(actorId, actorUuid, buyerId, stockId, quantity) {
   });
 }
 
+function saleResultToPlayer(recipientId, requestId, result) {
+  if (!recipientId || !game.users.get(recipientId)) return Promise.resolve();
+  return ChatMessage.create({
+    content: "", whisper: [recipientId],
+    flags: { [MODULE_ID]: { saleResult: { requestId, recipientId, result } } }
+  }).catch(error => console.error(`${MODULE_ID} | Could not send sale result.`, error));
+}
+async function sendSaleOffer(sale, { outcome = "", persuasionUsed = false } = {}) {
+  const lines = sale.currentOffer.lines.map(line => {
+    const item = sale.items.find(record => record.itemId === line.itemId);
+    return { itemId: line.itemId, name: item?.name ?? "Item", img: item?.img, quantity: line.quantity, unitValueCopper: item?.unitValueCopper, valueText: item?.valueText ?? "Value not set", offerCopper: line.offerCopper };
+  });
+  const totalCopper = lines.reduce((total, line) => total + line.offerCopper * line.quantity, 0);
+  await ChatMessage.create({
+    content: "", whisper: [sale.requesterId],
+    flags: { [MODULE_ID]: { saleOffer: {
+      requestId: sale.request.requestId, recipientId: sale.requesterId, buyerId: sale.buyer.id, merchantName: sale.merchant.name,
+      lines, totalCopper, persuasionBonus: sale.persuasionBonus, persuasionUsed, outcome
+    } } }
+  });
+}
+function promptGmSaleOffer(sale, { previous = null, rollSummary = "" } = {}) {
+  return new Promise(resolve => {
+    const { overlay, panel } = saleOverlay(`Offer to ${sale.requester.name}`, "merchant-gm-sale");
+    const intro = document.createElement("p");
+    intro.textContent = `${sale.requester.name} wishes to sell the following items to ${sale.merchant.name}. Choose which items the merchant wants and enter an offer per item.`;
+    const rollLine = document.createElement("p");
+    rollLine.className = "merchant-sale-roll-summary";
+    rollLine.textContent = rollSummary;
+    const funds = document.createElement("p");
+    const purse = copperValue(sale.merchant.system.currency ?? {});
+    funds.textContent = `Merchant funds available: ${currencyText(sale.merchant.system.currency ?? {})} (${goldText(purse)} total)`;
+    const list = document.createElement("div");
+    list.className = "merchant-gm-sale-lines";
+    const rows = [];
+    for (const record of sale.items) {
+      const row = document.createElement("div"); row.className = "merchant-gm-sale-line";
+      const checkbox = document.createElement("input"); checkbox.type = "checkbox"; checkbox.checked = previous ? previous.lines.some(line => line.itemId === record.itemId) : true;
+      checkbox.setAttribute("aria-label", `Buy ${record.name}`);
+      const details = document.createElement("div");
+      const name = document.createElement("strong"); name.textContent = `${record.quantity} × ${record.name}`;
+      const value = document.createElement("small"); value.textContent = `Actor's value: ${record.valueText}${record.unitValueCopper === null ? "" : ` each; ${copperText(record.unitValueCopper * record.quantity)} total`}`;
+      details.append(name, value);
+      const offerLabel = document.createElement("label"); offerLabel.textContent = "Offer each (gp)";
+      const offer = document.createElement("input"); offer.type = "number"; offer.min = "0"; offer.step = "0.01";
+      const oldLine = previous?.lines.find(line => line.itemId === record.itemId);
+      offer.value = String(((oldLine?.offerCopper ?? record.unitValueCopper ?? 0) / CURRENCY.gp).toFixed(2));
+      offerLabel.append(offer);
+      row.append(checkbox, details, offerLabel); list.append(row); rows.push({ record, checkbox, offer });
+    }
+    const bonusLabel = document.createElement("label"); bonusLabel.textContent = "Bonus advised for the actor's Persuasion roll";
+    const bonus = document.createElement("input"); bonus.type = "number"; bonus.step = "1"; bonus.value = String(previous?.persuasionBonus ?? sale.persuasionBonus ?? 0); bonusLabel.append(bonus);
+    const total = document.createElement("p"); total.className = "merchant-sale-total";
+    const status = document.createElement("p"); status.className = "merchant-sale-status";
+    const actions = document.createElement("div"); actions.className = "purchase-dialog-actions";
+    const cancel = document.createElement("button"); cancel.type = "button"; cancel.textContent = previous ? "Keep Current Offer" : "Cancel Sale";
+    const submit = document.createElement("button"); submit.type = "button"; submit.textContent = previous ? "Send Revised Offer" : "Send Offer";
+    actions.append(cancel, submit);
+    panel.append(intro); if (rollSummary) panel.append(rollLine); panel.append(funds, list, bonusLabel, total, status, actions);
+    const calculate = () => {
+      let offerTotal = 0; let valid = true; let selected = 0;
+      for (const { record, checkbox, offer } of rows) {
+        if (!checkbox.checked) continue;
+        selected += 1;
+        const amount = Number(offer.value);
+        if (!Number.isFinite(amount) || amount < 0) { valid = false; continue; }
+        offerTotal += Math.round(amount * CURRENCY.gp) * record.quantity;
+      }
+      total.textContent = `Total offer: ${goldText(offerTotal)}`;
+      if (!selected) status.textContent = "Select at least one item to make an offer.";
+      else if (!valid) status.textContent = "Enter a valid non-negative offer for each selected item.";
+      else if (offerTotal > purse) status.textContent = "The merchant does not have enough funds for this offer.";
+      else status.textContent = "The seller will be asked to accept or negotiate this offer.";
+      submit.disabled = !selected || !valid || offerTotal > purse;
+    };
+    for (const { checkbox, offer } of rows) { checkbox.addEventListener("change", calculate); offer.addEventListener("input", calculate); }
+    bonus.addEventListener("input", calculate);
+    const close = result => { overlay.remove(); resolve(result); };
+    cancel.addEventListener("click", () => close(previous ? { keep: true } : null));
+    submit.addEventListener("click", () => {
+      const lines = rows.filter(row => row.checkbox.checked).map(({ record, offer }) => ({ itemId: record.itemId, quantity: record.quantity, offerCopper: Math.round(Number(offer.value) * CURRENCY.gp) }));
+      close({ lines, persuasionBonus: Math.trunc(Number(bonus.value) || 0) });
+    });
+    overlay.addEventListener("click", event => { if (event.target === overlay) close(previous ? { keep: true } : null); });
+    overlay.addEventListener("keydown", event => { if (event.key === "Escape") close(previous ? { keep: true } : null); });
+    calculate();
+  });
+}
+async function processSaleRequest(request, authenticatedUserId) {
+  const requester = game.users.get(authenticatedUserId), buyer = game.actors.get(request.buyerId), merchant = await resolveMerchant({ actorId: request.merchantId, actorUuid: request.merchantUuid });
+  if (!requester || !buyer || !merchant || !isConfiguredShop(merchant)) return saleResultToPlayer(authenticatedUserId, request.requestId, { success: false, message: "That merchant or character is no longer available." });
+  if (!requester.isGM && (requester.character?.id !== buyer.id || !buyer.testUserPermission(requester, CONST.DOCUMENT_OWNERSHIP_LEVELS.OWNER))) return saleResultToPlayer(authenticatedUserId, request.requestId, { success: false, message: "You do not own the character offering these items." });
+  const requestedItems = new Map();
+  for (const requested of request.items ?? []) requestedItems.set(requested.itemId, (requestedItems.get(requested.itemId) ?? 0) + Math.floor(Number(requested.quantity)));
+  const items = [];
+  for (const [itemId, quantity] of requestedItems) {
+    const item = buyer.items.get(itemId);
+    if (!item || !Number.isSafeInteger(quantity) || quantity < 1 || quantity > itemQuantity(item)) continue;
+    const itemData = item.toObject();
+    const unitValueCopper = itemPriceCopper(item);
+    items.push({ itemId: item.id, name: item.name, img: item.img, type: item.type, quantity, available: itemQuantity(item), unitValueCopper, valueText: unitValueCopper === null ? "Value not set" : priceLabel(item.system?.price ?? {}), sourceData: itemData });
+  }
+  if (!items.length) return saleResultToPlayer(authenticatedUserId, request.requestId, { success: false, message: "None of those items are still available in the character's inventory." });
+  const sale = { request, requester, requesterId: authenticatedUserId, buyer, merchant, items, currentOffer: null, persuasionBonus: 0, persuasionUsed: false };
+  pendingSales.set(request.requestId, sale);
+  const offer = await promptGmSaleOffer(sale);
+  if (!offer) {
+    pendingSales.delete(request.requestId);
+    return saleResultToPlayer(authenticatedUserId, request.requestId, { success: false, message: "The merchant declined to review this sale." });
+  }
+  sale.currentOffer = offer; sale.persuasionBonus = offer.persuasionBonus;
+  await sendSaleOffer(sale);
+}
+function showPlayerSaleOffer(offer) {
+  const { overlay, panel } = saleOverlay(`Offer from ${offer.merchantName}`, "merchant-player-sale-offer");
+  if (offer.outcome) { const outcome = document.createElement("p"); outcome.className = "merchant-sale-roll-summary"; outcome.textContent = offer.outcome; panel.append(outcome); }
+  const list = document.createElement("ul"); list.className = "merchant-sale-list";
+  for (const line of offer.lines) {
+    const row = document.createElement("li");
+    const image = document.createElement("img"); image.src = line.img ?? "icons/svg/item-bag.svg"; image.alt = "";
+    const name = document.createElement("strong"); name.textContent = `${line.quantity} × ${line.name}`;
+    const value = document.createElement("small"); value.textContent = `Your item's value: ${line.valueText} each · Merchant offer: ${goldText(line.offerCopper * line.quantity)}`;
+    const details = document.createElement("div"); details.append(name, value);
+    row.append(image, details); list.append(row);
+  }
+  const total = document.createElement("p"); total.className = "merchant-sale-total"; total.textContent = `Total offered: ${goldText(offer.totalCopper)}`;
+  const bonus = document.createElement("p"); bonus.textContent = `GM-advised Persuasion bonus: ${offer.persuasionBonus >= 0 ? "+" : ""}${offer.persuasionBonus}`;
+  const status = document.createElement("p"); status.className = "merchant-sale-status";
+  const actions = document.createElement("div"); actions.className = "purchase-dialog-actions";
+  const accept = document.createElement("button"); accept.type = "button"; accept.textContent = "Accept Offer";
+  const persuade = document.createElement("button"); persuade.type = "button"; persuade.textContent = "Try Persuasion"; persuade.disabled = Boolean(offer.persuasionUsed);
+  const decline = document.createElement("button"); decline.type = "button"; decline.textContent = "Decline";
+  actions.append(accept, persuade, decline); panel.append(list, total, bonus, status, actions);
+  const close = () => overlay.remove();
+  const send = async response => {
+    for (const button of actions.querySelectorAll("button")) button.disabled = true;
+    status.textContent = "Waiting for the merchant…";
+    const activeGM = game.users.activeGM;
+    if (!activeGM) { status.textContent = "An active GM is required to continue this sale."; for (const button of actions.querySelectorAll("button")) button.disabled = false; return; }
+    try {
+      await ChatMessage.create({ content: "", whisper: [activeGM.id], flags: { [MODULE_ID]: { saleResponse: { requestId: offer.requestId, ...response } } } });
+      close();
+    } catch (error) {
+      console.error(`${MODULE_ID} | Could not send sale response.`, error);
+      status.textContent = "Your response could not be sent to the GM.";
+      for (const button of actions.querySelectorAll("button")) button.disabled = false;
+    }
+  };
+  accept.addEventListener("click", () => void send({ action: "accept" }));
+  decline.addEventListener("click", () => void send({ action: "decline" }));
+  persuade.addEventListener("click", async () => {
+    persuade.disabled = true;
+    status.textContent = "Rolling Persuasion…";
+    const actor = game.user.character;
+    if (!actor || actor.id !== offer.buyerId) {
+      status.textContent = "Your assigned character changed. Reopen the shop offer using the character who submitted the items.";
+      persuade.disabled = false;
+      return;
+    }
+    const skill = actor?.system.skills?.per;
+    const ability = actor?.system.abilities?.[skill?.ability ?? "cha"];
+    const prof = Number(actor?.system.attributes?.prof ?? 0);
+    const proficiency = Number(skill?.value ?? 0);
+    const skillBonus = Number(skill?.total ?? skill?.mod ?? (Number(ability?.mod ?? 0) + prof * proficiency));
+    const bonusValue = Number(offer.persuasionBonus) || 0;
+    try {
+      const roll = await new Roll(`1d20 + (${skillBonus}) + (${bonusValue})`).evaluate();
+      const rollMessage = await roll.toMessage({ speaker: ChatMessage.getSpeaker({ actor }), flavor: `Persuasion to negotiate with ${offer.merchantName}` });
+      await rollMessage.update({ [`flags.${MODULE_ID}.persuasionRoll`]: { requestId: offer.requestId, actorId: actor.id } });
+      const activeGM = game.users.activeGM;
+      if (!activeGM) throw new Error("No active GM is connected.");
+      await ChatMessage.create({ content: "", whisper: [activeGM.id], flags: { [MODULE_ID]: { saleResponse: { requestId: offer.requestId, action: "persuade", rollMessageId: rollMessage.id } } } });
+      close();
+    } catch (error) {
+      console.error(`${MODULE_ID} | Persuasion roll failed.`, error);
+      status.textContent = "The Persuasion roll could not be sent. You can accept or decline the offer.";
+      persuade.disabled = false;
+    }
+  });
+  overlay.addEventListener("click", event => { if (event.target === overlay) close(); });
+  overlay.addEventListener("keydown", event => { if (event.key === "Escape") close(); });
+}
+async function processSaleResponse(response, authenticatedUserId) {
+  const sale = pendingSales.get(response.requestId);
+  if (!sale || authenticatedUserId !== sale.requesterId) return;
+  if (response.action === "decline") {
+    pendingSales.delete(response.requestId);
+    return saleResultToPlayer(sale.requesterId, response.requestId, { success: false, message: "You declined the merchant's offer." });
+  }
+  if (response.action === "accept") {
+    const result = await commitSale(sale);
+    pendingSales.delete(response.requestId);
+    await saleResultToPlayer(sale.requesterId, response.requestId, result);
+    if (result.success) {
+      const escape = value => foundry.utils.escapeHTML(String(value ?? ""));
+      const lines = sale.currentOffer.lines.map(line => `${line.quantity} × ${escape(sale.items.find(item => item.itemId === line.itemId)?.name)} — ${escape(goldText(line.offerCopper * line.quantity))}`).join("<br>");
+      const gmIds = game.users.filter(user => user.isGM).map(user => user.id);
+      void ChatMessage.create({ content: `<div class="merchant-purchase-card"><h3>Merchant Sale</h3><p><strong>${escape(sale.requester.name)}</strong> sold to ${escape(sale.merchant.name)}:<br>${lines}<br>Total paid: ${escape(goldText(sale.currentOffer.lines.reduce((sum, line) => sum + line.offerCopper * line.quantity, 0)))}</p></div>`, whisper: gmIds }).catch(error => console.error(`${MODULE_ID} | Could not create sale chat card.`, error));
+    }
+    return;
+  }
+  if (response.action !== "persuade" || sale.persuasionUsed) return;
+  const requester = game.users.get(authenticatedUserId), rollMessage = game.messages.get(response.rollMessageId);
+  const rollAuthorId = rollMessage?.author?.id ?? rollMessage?.user?.id;
+  const rollTotal = rollMessage?.rolls?.[0]?.total;
+  const rollFlag = rollMessage?.getFlag(MODULE_ID, "persuasionRoll");
+  if (!rollMessage || rollAuthorId !== authenticatedUserId || rollMessage.speaker?.actor !== sale.buyer.id || rollFlag?.requestId !== response.requestId || rollFlag?.actorId !== sale.buyer.id || !Number.isFinite(rollTotal)) {
+    return sendSaleOffer(sale, { outcome: "The Persuasion roll could not be verified. The current offer remains open.", persuasionUsed: false });
+  }
+  const insight = sale.merchant.system.skills?.ins;
+  const wisdom = sale.merchant.system.abilities?.wis;
+  const proficiency = Number(sale.merchant.system.attributes?.prof ?? 0);
+  const insightBonus = Number(insight?.total ?? insight?.mod ?? (Number(wisdom?.mod ?? 0) + proficiency * Number(insight?.value ?? 0)));
+  const insightRoll = await new Roll(`1d20 + (${insightBonus})`).evaluate();
+  await insightRoll.toMessage({ speaker: ChatMessage.getSpeaker({ actor: sale.merchant }), flavor: `Insight contest against ${requester.name}'s Persuasion`, whisper: game.users.filter(user => user.isGM).map(user => user.id) });
+  sale.persuasionUsed = true;
+  if (rollTotal > insightRoll.total) {
+    const rollSummary = `${requester.name} Persuasion: ${rollTotal}. ${sale.merchant.name} Insight: ${insightRoll.total}. The actor won and may receive a revised offer.`;
+    const revised = await promptGmSaleOffer(sale, { previous: sale.currentOffer, rollSummary });
+    if (revised && !revised.keep) { sale.currentOffer = revised; sale.persuasionBonus = revised.persuasionBonus; }
+    await sendSaleOffer(sale, { outcome: rollSummary, persuasionUsed: true });
+  } else {
+    const rollSummary = `${requester.name} Persuasion: ${rollTotal}. ${sale.merchant.name} Insight: ${insightRoll.total}. The merchant held firm; the offer is unchanged.`;
+    await sendSaleOffer(sale, { outcome: rollSummary, persuasionUsed: true });
+  }
+}
+async function commitSale(sale) {
+  const { buyer, merchant, currentOffer } = sale;
+  if (!isConfiguredShop(merchant)) return { success: false, message: "This merchant is no longer set up as a shop." };
+  const total = currentOffer.lines.reduce((sum, line) => sum + line.offerCopper * line.quantity, 0);
+  const buyerCurrency = foundry.utils.deepClone(buyer.system.currency ?? {}), merchantCurrency = foundry.utils.deepClone(merchant.system.currency ?? {});
+  if (copperValue(merchantCurrency) < total) return { success: false, message: "The merchant no longer has enough funds to pay this offer." };
+  const stock = foundry.utils.deepClone(merchant.getFlag(MODULE_ID, "stock") ?? []), originalStock = foundry.utils.deepClone(stock);
+  const itemChanges = [], fullItems = [], soldRecords = [];
+  for (const line of currentOffer.lines) {
+    const item = buyer.items.get(line.itemId), quantity = Math.floor(Number(line.quantity)), record = sale.items.find(candidate => candidate.itemId === line.itemId);
+    if (!item || !record || !Number.isSafeInteger(quantity) || quantity < 1 || quantity > itemQuantity(item)) return { success: false, message: `${record?.name ?? "An item"} is no longer available in the requested quantity.` };
+    const data = item.toObject(); delete data._id; delete data._stats; delete data.uuid;
+    const remaining = itemQuantity(item) - quantity;
+    if (remaining) itemChanges.push({ _id: item.id, "system.quantity": remaining });
+    else fullItems.push(item);
+    soldRecords.push({ item, data, quantity, originalQuantity: itemQuantity(item) });
+  }
+  for (const { item, data, quantity } of soldRecords) {
+    let entry = stock.find(candidate => candidate.sourceUuid === item.uuid || (!candidate.sourceUuid && candidate.name === item.name && candidate.type === item.type));
+    if (entry) {
+      entry.quantity = Number(entry.quantity ?? 0) + quantity;
+      entry.system ??= {};
+      entry.system.price = foundry.utils.deepClone(data.system?.price ?? {});
+    } else stock.push({ id: foundry.utils.randomID(), name: item.name, img: item.img, type: item.type, system: foundry.utils.deepClone(data.system ?? {}), sourceUuid: item.uuid, sourceData: data, quantity });
+  }
+  let buyerMoneyAttempted = false, merchantUpdateAttempted = false;
+  try {
+    if (itemChanges.length) await buyer.updateEmbeddedDocuments("Item", itemChanges);
+    if (fullItems.length) await buyer.deleteEmbeddedDocuments("Item", fullItems.map(item => item.id));
+    buyerMoneyAttempted = true;
+    await buyer.update({ "system.currency": currencyFromCopper(copperValue(buyerCurrency) + total) });
+    merchantUpdateAttempted = true;
+    await merchant.update({ "system.currency": currencyFromCopper(copperValue(merchantCurrency) - total), [`flags.${MODULE_ID}.stock`]: stock });
+  return { success: true, message: `The merchant paid you ${goldText(total)} for your items.` };
+  } catch (error) {
+    console.error(`${MODULE_ID} | Sale transaction failed.`, error);
+    try {
+      if (merchantUpdateAttempted) await merchant.update({ "system.currency": merchantCurrency, [`flags.${MODULE_ID}.stock`]: originalStock });
+      if (buyerMoneyAttempted) await buyer.update({ "system.currency": buyerCurrency });
+      const deletedSources = soldRecords.filter(record => fullItems.some(item => item.id === record.item.id) && !buyer.items.has(record.item.id)).map(record => record.data);
+      if (deletedSources.length) await buyer.createEmbeddedDocuments("Item", deletedSources);
+      const partialRestores = soldRecords.filter(record => itemChanges.some(change => change._id === record.item.id) && buyer.items.has(record.item.id));
+      if (partialRestores.length) await buyer.updateEmbeddedDocuments("Item", partialRestores.map(record => ({ _id: record.item.id, "system.quantity": record.originalQuantity })));
+    } catch (rollbackError) { console.error(`${MODULE_ID} | Sale rollback also failed.`, rollbackError); }
+    return { success: false, message: `The sale could not be completed: ${error.message ?? error}. Check with the GM before retrying.` };
+  }
+}
 const { ApplicationV2, HandlebarsApplicationMixin } = foundry.applications.api;
 
 class MerchantSheet extends HandlebarsApplicationMixin(ApplicationV2) {
@@ -534,7 +961,7 @@ class MerchantSheet extends HandlebarsApplicationMixin(ApplicationV2) {
   static DEFAULT_OPTIONS = {
     id: "merchant-npc", tag: "form", classes: ["merchant-npc"], window: { title: "Merchant Shop", resizable: true }, position: { width: 1000, height: 720 },
     form: { handler: MerchantSheet.#onSubmit, submitOnChange: false },
-    actions: { addItems: MerchantSheet.#addItems, removeItem: MerchantSheet.#removeItem, saveItem: MerchantSheet.#saveItem, buy: MerchantSheet.#buy, setFloat: MerchantSheet.#setFloat, setShopType: MerchantSheet.#setShopType }
+    actions: { addItems: MerchantSheet.#addItems, removeItem: MerchantSheet.#removeItem, saveItem: MerchantSheet.#saveItem, buy: MerchantSheet.#buy, sellItems: MerchantSheet.#sellItems, setFloat: MerchantSheet.#setFloat, setShopType: MerchantSheet.#setShopType }
   };
   static PARTS = { form: { template: "modules/merchant-npc/templates/merchant-sheet.hbs" } };
   _onRender(context, options) {
@@ -565,7 +992,7 @@ class MerchantSheet extends HandlebarsApplicationMixin(ApplicationV2) {
       stock: stock.map(item => {
         const price = item.system?.price;
         const hasPrice = price?.value !== undefined && price?.value !== null && price?.value !== "";
-        return { ...item, hasPrice, priceMissing: !hasPrice, priceZero: !hasPrice || Number(price.value) === 0, priceText: hasPrice ? priceLabel(price) : "Price not set", denomination: price?.denomination ?? "gp", description: stripHTML(item.system?.description?.value ?? item.system?.description ?? "") };
+        return { ...item, hasPrice, priceMissing: !hasPrice, priceZero: !hasPrice || Number(price.value) === 0, priceText: hasPrice ? priceLabel(price) : "Price not set", denomination: price?.denomination ?? "gp", description: tooltipText(item.system?.description?.value ?? item.system?.description ?? "") };
       }),
       isGM: game.user.isGM,
       shopTypeLabel: SHOP_TYPES[this.shopType] ?? SHOP_TYPES.general,
@@ -573,10 +1000,10 @@ class MerchantSheet extends HandlebarsApplicationMixin(ApplicationV2) {
       shopTypeOptions: Object.entries(SHOP_TYPES).map(([value, label]) => ({ value, label, selected: value === this.shopType })),
       funds: this.#funds(),
       floatPresets: FLOAT_PRESETS.map(([name, amount]) => {
-        const value = amount * (this.shopType === "jeweller" ? 10 : 1);
-        return { value, label: `${name} · ${value.toLocaleString()} gp` };
+        const multiplier = this.shopType === "jeweller" ? 10 : 1;
+        return { value: amount, label: `${name} · ${(amount * multiplier).toLocaleString()} gp` };
       }),
-      floatHint: this.shopType === "jeweller" ? "Jeweller float presets are ten times the normal NPC amounts." : "Choose a starting purse in gold pieces."
+      floatHint: this.shopType === "jeweller" ? "Jeweller starting floats multiply preset and custom amounts by ten." : "Choose a starting purse in gold pieces."
     };
   }
   #funds() { const c = this.actor.system.currency ?? {}; return Object.entries(CURRENCY).map(([k]) => `${k}: ${Number(c[k] ?? 0)}`).join(" · "); }
@@ -629,16 +1056,20 @@ class MerchantSheet extends HandlebarsApplicationMixin(ApplicationV2) {
   }
   static async #setFloat() {
     if (!game.user.isGM) return ui.notifications.error("Only the GM can set a merchant's starting float.");
-    this.shopType = this.actor.getFlag(MODULE_ID, "shopType") ?? "general";
+    const selectedType = this.element.querySelector("[name='shopType']")?.value;
+    const savedType = this.actor.getFlag(MODULE_ID, "shopType");
+    this.shopType = SHOP_TYPES[selectedType] ? selectedType : (SHOP_TYPES[savedType] ? savedType : "general");
     const preset = this.element.querySelector("[name='floatPreset']")?.value;
     const custom = Number(this.element.querySelector("[name='floatAmount']")?.value);
-    const gp = preset === "custom" ? custom : Number(preset);
-    if (!Number.isFinite(gp) || gp < 0) return ui.notifications.warn("Enter a valid non-negative amount of gold pieces.");
+    const baseGp = preset === "custom" ? custom : Number(preset);
+    if (!Number.isFinite(baseGp) || baseGp < 0) return ui.notifications.warn("Choose a valid float preset or enter a non-negative custom amount in gold pieces.");
+    const gp = baseGp * (this.shopType === "jeweller" ? 10 : 1);
     let balance = Math.round(gp * CURRENCY.gp);
     const currency = {};
     for (const [denomination, value] of Object.entries(CURRENCY)) { currency[denomination] = Math.floor(balance / value); balance %= value; }
-    await this.actor.update({ "system.currency": currency });
+    await this.actor.setFlag(MODULE_ID, "shopType", this.shopType);
     await this.actor.setFlag(MODULE_ID, "isShop", true);
+    await this.actor.update({ "system.currency": currency });
     this.render();
   }
   static async #setShopType() {
@@ -661,6 +1092,12 @@ class MerchantSheet extends HandlebarsApplicationMixin(ApplicationV2) {
     if (!result?.success) return ui.notifications.warn(result?.message ?? "The purchase could not be completed.");
     ui.notifications.info(result.message ?? "Purchase completed.");
     this.render();
+  }
+  static async #sellItems() {
+    const buyer = game.user.character;
+    if (!buyer) return ui.notifications.warn("Assign your user a character in User Configuration before selling items.");
+    const items = await promptSellItems(buyer, this.actor);
+    if (items?.length) await requestSale(buyer, this.actor, items);
   }
   _onDrop(event) {
     const data = TextEditor.getDragEventData(event);
@@ -736,7 +1173,7 @@ class ItemBrowser extends HandlebarsApplicationMixin(ApplicationV2) {
       return indexedCatalog;
     }
     this.#showLoadingDialog();
-    const worldItems = game.items.contents.map(item => ({ _id: item.id, name: item.name, img: item.img, type: item.type, category: classifyItem(item), description: stripHTML(item.system?.description?.value ?? item.system?.description ?? ""), source: "world-items" })).filter(item => item.category);
+    const worldItems = game.items.contents.map(item => ({ _id: item.id, name: item.name, img: item.img, type: item.type, category: classifyItem(item), description: tooltipText(item.system?.description?.value ?? item.system?.description ?? ""), source: "world-items" })).filter(item => item.category);
     indexedCatalog = worldItems.length ? [{ id: "world-items", label: "World Items", items: worldItems, world: true }] : [];
     this.catalog = indexedCatalog;
     if (!indexingCatalog) {
@@ -745,7 +1182,7 @@ class ItemBrowser extends HandlebarsApplicationMixin(ApplicationV2) {
         try {
           const source = await withTimeout((async () => {
             await pack.getIndex({ fields: ["system.type.value", "system.armor", "system.rarity", "system.attunement", "system.properties", "system.magical", "system.identifier", "system.description.value", "system.description"] });
-            const items = [...pack.index].map(entry => ({ _id: entry._id, name: entry.name, img: entry.img, type: entry.type, category: classifyItem(entry), description: stripHTML(entry.system?.description?.value ?? entry.system?.description ?? ""), source: pack.collection })).filter(item => item.category);
+            const items = [...pack.index].map(entry => ({ _id: entry._id, name: entry.name, img: entry.img, type: entry.type, category: classifyItem(entry), description: tooltipText(entry.system?.description?.value ?? entry.system?.description ?? ""), source: pack.collection })).filter(item => item.category);
             return items.length >= 5 ? { id: pack.collection, label: pack.title, items, world: false } : null;
           })(), 5000, `Compendium ${pack.title}`);
           if (!source) return;
@@ -824,8 +1261,19 @@ class ItemBrowser extends HandlebarsApplicationMixin(ApplicationV2) {
     const table = uuid && await fromUuid(uuid);
     if (!table) return ui.notifications.warn("Choose a rollable table first.");
     const items = [];
+    let completedDraws = 0;
+    let skippedResults = 0;
     for (let i = 0; i < draws; i++) {
-      const draw = await table.draw({ displayChat: false, recursive: true });
+      let draw;
+      try {
+        draw = await table.draw({ displayChat: false, recursive: true });
+      } catch (error) {
+        // Tables configured without replacement can run out of undrawn results
+        // before the requested number of draws has been reached.
+        console.debug(`${MODULE_ID} | Stopped drawing from '${table.name}' after ${completedDraws} result${completedDraws === 1 ? "" : "s"}.`, error);
+        break;
+      }
+      completedDraws += 1;
       for (const result of draw.results ?? []) {
         let item;
         try { item = await result.getDocument?.(); } catch { /* Try the result UUID below. */ }
@@ -840,13 +1288,17 @@ class ItemBrowser extends HandlebarsApplicationMixin(ApplicationV2) {
           }
         }
         if (isItemDocument(item) && this.selectedTypes.has(classifyItem(item))) items.push(item.toObject());
+        else skippedResults += 1;
       }
     }
     if (items.length) {
       await this.merchantSheet.addStockMany(items.map(source => ({ source, quantity: 1 })));
-      ui.notifications.info(`Added ${items.length} item result${items.length === 1 ? "" : "s"} from ${table.name}.`);
+      const skippedMessage = skippedResults ? ` Skipped ${skippedResults} result${skippedResults === 1 ? "" : "s"} that did not match the selected item types or link to an Item.` : "";
+      const exhaustedMessage = completedDraws < draws ? ` The table had only ${completedDraws} available draw${completedDraws === 1 ? "" : "s"}.` : "";
+      ui.notifications.info(`Added ${items.length} item result${items.length === 1 ? "" : "s"} from ${table.name}.${skippedMessage}${exhaustedMessage}`);
     }
-    else ui.notifications.warn("The selected table returned no linked Item documents. Link its results to Item documents to stock them automatically.");
+    else if (completedDraws === 0) ui.notifications.warn("There are no available results which can be drawn from this table. Reset the table results or enable drawing with replacement.");
+    else ui.notifications.warn("The selected table returned no matching linked Item documents. Link its results to Item documents that match the selected item types.");
   }
   static async #done() { this.close(); }
 }

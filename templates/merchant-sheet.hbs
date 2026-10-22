@@ -13,12 +13,12 @@
       <label>Custom amount (gp)<input type="number" name="floatAmount" min="0" step="0.01" value="0"></label>
       <button type="button" data-action="setFloat">Set Funds</button>
     </div>
-    <p class="hint">{{floatHint}} Normal presets: Poor 200 gp, Average 500 gp, Rich 1,000 gp. Jeweller presets are 10×.</p>
+    <p class="hint">{{floatHint}} Normal presets: Poor 200 gp, Average 500 gp, Rich 1,000 gp.</p>
   </section>
   {{/if}}
 
   <section class="merchant-stock-area">
-    <h3>Shop Items <span>{{stock.length}} listed</span></h3>
+    <h3>Shop Items <span>{{stock.length}} listed</span>{{#unless isGM}}<button type="button" class="merchant-sell-open" data-action="sellItems"><i class="fas fa-coins"></i> Sell Items</button>{{/unless}}</h3>
     <ul class="merchant-stock">
       {{#each stock as |item|}}
         <li class="merchant-item {{#if @root.isGM}}merchant-item-gm{{/if}}" data-stock-id="{{item.id}}">

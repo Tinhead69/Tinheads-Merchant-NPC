@@ -42,6 +42,23 @@
 .merchant-purchase-dialog .purchase-total { font-weight: 700; }
 .merchant-purchase-dialog .purchase-status { min-height: 1.3em; }
 .merchant-purchase-dialog .purchase-dialog-actions { display: flex; justify-content: flex-end; gap: .5rem; }
+.merchant-sale-dialog { width: min(46rem, 95vw); max-height: min(85vh, 52rem); overflow: auto; }
+.merchant-sale-dialog > p { margin: .15rem 0; }
+.merchant-sale-drop-area { display: grid; min-height: 5rem; place-items: center; padding: 1rem; border: 2px dashed #8f7543; border-radius: 4px; color: var(--color-text-primary); background: #191619; }
+.merchant-sale-drop-area.drag-active { border-color: #973c08; background: #322012; }
+.merchant-sale-list, .merchant-gm-sale-lines { display: grid; gap: .35rem; max-height: 35vh; overflow: auto; list-style: none; margin: 0; padding: 0; }
+.merchant-sale-list li, .merchant-gm-sale-line { display: grid; grid-template-columns: 36px minmax(0, 1fr) auto auto; align-items: center; gap: .55rem; padding: .35rem; border: 1px solid #55444a; background: #191619; }
+.merchant-sale-list li img { width: 32px; height: 32px; object-fit: cover; }
+.merchant-player-sale-offer .merchant-sale-list li { grid-template-columns: 36px minmax(0, 1fr); }
+.merchant-sale-list li > div, .merchant-gm-sale-line > div { display: grid; gap: .15rem; min-width: 0; }
+.merchant-sale-list small, .merchant-gm-sale-line small { color: #b8adb0; }
+.merchant-sale-list input, .merchant-gm-sale-line input[type="number"] { width: 6rem; }
+.merchant-gm-sale-line { grid-template-columns: auto minmax(0, 1fr) 8rem; }
+.merchant-gm-sale-line input[type="checkbox"] { width: 1rem; }
+.merchant-sale-roll-summary { padding: .45rem; border-left: 3px solid #973c08; background: #211a1f; }
+.merchant-sale-total { font-weight: 700; }
+.merchant-sale-status { min-height: 1.25em; }
+.merchant-sale-dialog .purchase-dialog-actions { position: sticky; bottom: -1rem; padding: .5rem 0 0; background: var(--color-cool-5); }
 .merchant-loading-dialog { position: fixed; inset: 0; z-index: 100000; display: grid; place-items: center; padding: 1rem; background: #0008; }
 .merchant-loading-message { border: 1px solid var(--color-border-light-2); border-radius: 6px; padding: 1.25rem 1.6rem; font-weight: 600; color: var(--color-text-primary); background: var(--color-cool-5); box-shadow: 0 4px 18px #0008; }
 
@@ -82,8 +99,8 @@
   --merchant-bg: #100d10;
   --merchant-panel: #191619;
   --merchant-panel-raised: #242024;
-  --merchant-burgundy: #641426;
-  --merchant-burgundy-dark: #350b16;
+  --merchant-banner: #973c08;
+  --merchant-banner-dark: #4c1e04;
   --merchant-brass: #a58a50;
   --merchant-rule: #55444a;
   --merchant-text: #f0e9df;
@@ -94,8 +111,8 @@
 .merchant-npc .window-content { background: var(--merchant-bg); color: var(--merchant-text); }
 .merchant-npc .window-header {
   border: 1px solid var(--merchant-brass);
-  border-bottom-color: #6e2735;
-  background: linear-gradient(110deg, var(--merchant-burgundy-dark), #56101f 55%, #270c14);
+  border-bottom-color: var(--merchant-banner);
+  background: linear-gradient(110deg, var(--merchant-banner-dark), var(--merchant-banner) 55%, #321807);
   color: #fff7ed;
 }
 .merchant-npc .merchant-layout { gap: .6rem; padding: .7rem; background: var(--merchant-bg); }
@@ -105,8 +122,8 @@
   padding: .55rem .7rem;
   border: 1px solid var(--merchant-brass);
   border-radius: 3px;
-  border-bottom-color: #6e2735;
-  background: linear-gradient(115deg, #57101e 0%, #351018 55%, #1a0e12 100%);
+  border-bottom-color: var(--merchant-banner);
+  background: linear-gradient(115deg, var(--merchant-banner) 0%, #572703 55%, #1a0e12 100%);
   box-shadow: inset 0 0 0 1px #ffffff0a;
 }
 .merchant-npc .merchant-heading img { width: 58px; height: 58px; border: 1px solid var(--merchant-brass); border-radius: 2px; }
@@ -136,9 +153,9 @@
 .merchant-npc .merchant-stock-area > h3 {
   min-height: 1.8rem;
   padding: .32rem .5rem;
-  border: 1px solid #7d2c3d;
+  border: 1px solid var(--merchant-banner);
   border-radius: 2px;
-  background: linear-gradient(90deg, var(--merchant-burgundy), #4a101e);
+  background: linear-gradient(90deg, var(--merchant-banner), #572703);
   color: #fff3e7;
   font-variant: small-caps;
   letter-spacing: .035em;
@@ -150,6 +167,7 @@
 .merchant-npc .table-generator > h3 { font-size: 1.05rem; }
 .merchant-npc .merchant-stock-area { gap: .3rem; }
 .merchant-npc .merchant-stock-area > h3 { margin: 0; }
+.merchant-npc .merchant-stock-area > h3 .merchant-sell-open { margin-left: auto; font-size: .78rem; }
 .merchant-npc .merchant-stock-area h3 span { color: #e4cea0; font-variant: normal; letter-spacing: 0; }
 .merchant-npc .merchant-stock { min-width: 0; gap: 0; border: 1px solid var(--merchant-rule); background: #121013; }
 .merchant-npc .merchant-item,
@@ -188,7 +206,7 @@
   color: #f5ead8;
   background: linear-gradient(#3a3030, #211b1e);
 }
-.merchant-npc button:hover { border-color: #d6b66f; color: #fff8e9; background: linear-gradient(#56303a, #311820); }
+.merchant-npc button:hover { border-color: #d6b66f; color: #fff8e9; background: linear-gradient(#70400f, #311d10); }
 .merchant-npc .purchase-button { min-width: 5.3rem; padding: .28rem .55rem; }
 .merchant-npc .price-input input.price-zero { background-color: #fff2a8; border-color: #c99a00; color: #3b2a00; }
 .merchant-npc .hint,
@@ -228,8 +246,8 @@
 .merchant-approval-card h3 {
   margin: 0 0 .35rem;
   padding: .3rem .45rem;
-  border: 1px solid #7d2c3d;
-  background: linear-gradient(90deg, #641426, #4a101e);
+  border: 1px solid var(--merchant-banner);
+  background: linear-gradient(90deg, var(--merchant-banner), #572703);
   color: #fff3e7;
 }
 .merchant-approval-card p { margin: .3rem 0 .55rem; }
@@ -242,7 +260,7 @@
   background: linear-gradient(#3a3030, #211b1e);
   cursor: pointer;
 }
-.merchant-approval-card button:hover { border-color: #d6b66f; background: linear-gradient(#56303a, #311820); }
+.merchant-approval-card button:hover { border-color: #d6b66f; background: linear-gradient(#70400f, #311d10); }
 
 @media (max-width: 760px) {
   .merchant-npc .merchant-item,

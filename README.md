@@ -10,7 +10,7 @@ Module download URL: `https://github.com/Tinhead69/Tinheads-Merchant-NPC/archive
 
 Player purchase requests are sent as private chat messages to the active GM. The GM validates the authenticated user ID supplied by Foundry's document creation hook before processing the request; client-provided user IDs are not trusted.
 
-In Foundry's **Install Module** screen, paste the manifest URL. The manifest download URL points to the repository main branch archive. Update the module version before distributing subsequent changes.
+In Foundry's **Install Module** screen, paste the manifest URL. The manifest download URL points to the repository main branch archive. Update the module version before distributing subsequent changes. Roll-table stock generation keeps valid linked Item results if a table has fewer available draws than requested, and skips text or non-matching results with a notification.
 
 ## Install
 
@@ -26,6 +26,7 @@ Copy the `merchant-npc` folder into your Foundry `Data/modules` directory, then 
 - GMs can set the merchant's purse to a custom amount in gp, or use Poor (200 gp), Average (500 gp), and Rich (1,000 gp) starting-float presets. Jewellers use ten times those preset values.
 - Set each item's price in its D&D 5e item data before listing it. Stock quantity is tracked by the shop; buyers can select a quantity up to the available stock.
 - Players click **Purchase** using the character assigned to their Foundry user, choose a quantity, and see their purse and total before confirming. Purchases are validated and completed automatically using the exact value of all `system.currency` denominations; currency is deducted, the purchased quantity is added to the character, merchant funds are credited, and stock is reduced. Positive-priced purchases complete automatically when the buyer has enough funds. An item priced at exactly 0 requires GM approval; choose **GM chat card** or **GM pop-up dialog** under **Game Settings → Configure Settings → Merchant NPC**. The active GM client handles the permission-secured transaction in the background. Source item data is cached in the GM client rather than copied into each stock entry, keeping transaction updates smaller. After a completed purchase, GMs receive a private chat card with the buyer, item, quantity, merchant, and total. Items with no price set cannot be purchased.
+- Players can click **Sell Items** and drag inventory items into the sale window, choose quantities, and send the proposed list to the active GM. The GM sees each item's quantity and listed value, can decline individual items, set a per-item offer, and advise a bonus for the seller's Persuasion check. The seller can accept, decline, or roll Persuasion against the merchant's Insight. A successful Persuasion check lets the GM revise the offer; otherwise the existing offer stands. Items and currency transfer only after the seller accepts, and sold items are added to merchant stock.
 - Merchant stock is saved in the NPC actor's `merchant-npc.stock` flag; merchant funds use the NPC's normal D&D 5e currency fields.
 
 ## Notes
