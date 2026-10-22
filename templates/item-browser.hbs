@@ -31,7 +31,7 @@
       <ul class="available-item-list">
         {{#each items as |item|}}
           <li title="{{item.description}}"><img src="{{item.img}}" alt=""><div class="available-item-name"><strong>{{item.name}}</strong><small>{{item.typeLabel}} · {{item.sourceLabel}}</small></div><button type="button" data-action="addItem" data-source="{{item.source}}" data-item="{{item._id}}">Add Item</button></li>
-        {{else}}<li class="empty">Choose item types and sources, then apply the filters.</li>{{/each}}
+        {{else}}<li class="empty">Choose item types, then select a source to view its items.</li>{{/each}}
       </ul>
     </section>
     <footer><span>Items added here appear on the merchant sheet immediately.</span><button type="button" data-action="done">Done</button></footer>

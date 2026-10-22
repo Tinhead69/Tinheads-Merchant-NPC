@@ -7,15 +7,44 @@ const ITEM_CATEGORIES = [
   ["magic", "Magic Items"], ["equipment", "Normal Equipment"]
 ];
 const pendingPurchases = new Map();
+const pendingApprovals = new Map();
 const cachedSourceItemData = new Map();
+const catalogSubscribers = new Set();
 // Keep the indexed catalog for this client session so reopening Add Items does
 // not repeat compendium indexing and item/description classification.
 let indexedCatalog = null;
 let indexingCatalog = null;
+let indexedRollTableCatalog = null;
+let indexingRollTableCatalog = null;
 
 function priceLabel(price = {}) { return `${price.value ?? price.amount ?? 0} ${price.denomination ?? price.currency ?? "gp"}`; }
 function isItemDocument(document) { return document?.documentName === "Item"; }
+async function mapWithConcurrency(items, limit, callback) {
+  const results = new Array(items.length);
+  let nextIndex = 0;
+  const workerCount = Math.min(items.length, Math.max(1, limit));
+  await Promise.all(Array.from({ length: workerCount }, async () => {
+    while (nextIndex < items.length) {
+      const index = nextIndex++;
+      results[index] = await callback(items[index], index);
+    }
+  }));
+  return results;
+}
 function isConfiguredShop(actor) { return Boolean(actor?.type === "npc" && actor.getFlag(MODULE_ID, "isShop") === true); }
+function refreshCatalogBrowsers() {
+  for (const browser of catalogSubscribers) {
+    browser.catalog = indexedCatalog;
+    if (browser.element?.isConnected) browser.render();
+  }
+}
+function withTimeout(promise, milliseconds, label) {
+  let timer;
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => { timer = window.setTimeout(() => reject(new Error(`${label} exceeded ${milliseconds} ms`)), milliseconds); })
+  ]).finally(() => window.clearTimeout(timer));
+}
 function getConfiguredShopActor(token) {
   const tokenActor = token?.actor;
   if (isConfiguredShop(tokenActor)) return tokenActor;
@@ -51,6 +80,12 @@ function classifyItem(item) {
 
 Hooks.once("init", () => {
   game.settings.register(MODULE_ID, "randomCount", { name: "Random stock count", hint: "Default number of items added by random compendium generation.", scope: "world", config: true, type: Number, default: 10, range: { min: 1, max: 100, step: 1 } });
+  game.settings.register(MODULE_ID, "zeroPriceApproval", {
+    name: "Zero-price purchase approval",
+    hint: "Choose how the GM approves purchases of items priced at 0.",
+    scope: "world", config: true, type: String, default: "chat",
+    choices: { chat: "GM chat card", dialog: "GM pop-up dialog" }
+  });
 });
 
 Hooks.once("ready", () => {
@@ -97,17 +132,44 @@ Hooks.once("ready", () => {
   };
   Hooks.on("canvasReady", installTokenDoubleClick);
   installTokenDoubleClick();
-  game.socket.on(`module.${MODULE_ID}`, async message => {
-    if (message?.kind === "purchase-result" && message.userId === game.user.id) {
-      const resolve = pendingPurchases.get(message.requestId);
-      if (resolve) { pendingPurchases.delete(message.requestId); resolve(message); }
+  Hooks.on("createChatMessage", async (message, _options, userId) => {
+    const request = message.getFlag(MODULE_ID, "purchaseRequest");
+    if (request && game.user.isGM && game.users.activeGM?.id === game.user.id) {
+      // The create hook's userId is supplied by Foundry for the authenticated
+      // document operation. Never authorize from an ID carried in the payload.
+      await message.delete().catch(error => console.warn(`${MODULE_ID} | Could not remove the private purchase transport message.`, error));
+      let result;
+      try { result = await processPurchase(request, userId); }
+      catch (error) {
+        console.error(`${MODULE_ID} | Purchase request failed before completion.`, error);
+        result = { success: false, message: "The purchase request could not be processed. Check the GM console." };
+      }
+      if (result?.pending) return;
+      await sendPurchaseResult(userId, request.requestId, result);
       return;
     }
-    if (message?.kind !== "purchase-request") return;
-    const activeGM = game.users.find(user => user.isGM && user.active);
-    if (!game.user.isGM || activeGM?.id !== game.user.id) return;
-    const result = await processPurchase(message);
-    game.socket.emit(`module.${MODULE_ID}`, { kind: "purchase-result", requestId: message.requestId, userId: message.userId, ...result });
+    const response = message.getFlag(MODULE_ID, "purchaseResult");
+    if (!response || response.recipientId !== game.user.id || !game.users.get(userId)?.isGM) return;
+    const pending = pendingPurchases.get(response.requestId);
+    if (pending) {
+      pendingPurchases.delete(response.requestId);
+      window.clearTimeout(pending.timeoutId);
+      pending.resolve(response.result);
+    } else if (!response.result?.pending) {
+      if (response.result?.success) ui.notifications.info(response.result.message);
+      else ui.notifications.warn(response.result?.message ?? "The purchase could not be completed.");
+    }
+  });
+  Hooks.on("renderChatMessageHTML", (message, html) => {
+    const approval = message.getFlag(MODULE_ID, "purchaseApproval");
+    if (!approval || approval.status !== "pending" || !game.user.isGM || game.users.activeGM?.id !== game.user.id) return;
+    for (const button of html.querySelectorAll("[data-merchant-approval]")) {
+      button.addEventListener("click", async event => {
+        event.preventDefault();
+        const approve = button.dataset.merchantApproval === "approve";
+        await resolvePurchaseApproval(message, approval.requestId, approve);
+      }, { once: true });
+    }
   });
   Hooks.on("getActorDirectoryEntryContext", (_html, entries) => entries.push({
     name: "Open Merchant Shop", icon: '<i class="fas fa-store"></i>',
@@ -260,28 +322,107 @@ function promptPurchase({ item, buyer, stockEntry }) {
 }
 
 const purchaseQueues = new Map();
-async function processPurchase(request) {
+function resolveMerchant(request) {
+  if (request.actorUuid?.startsWith("Actor.")) return Promise.resolve(game.actors.get(request.actorId) ?? null);
+  if (request.actorUuid) return fromUuid(request.actorUuid).catch(() => null);
+  return Promise.resolve(game.actors.get(request.actorId) ?? null);
+}
+function sendPurchaseResult(recipientId, requestId, result) {
+  if (!recipientId || !game.users.get(recipientId)) return Promise.resolve();
+  const message = foundry.utils.escapeHTML(String(result?.message ?? "The purchase could not be completed."));
+  return ChatMessage.create({
+    content: `<div class="merchant-purchase-result">${message}</div>`,
+    whisper: [recipientId],
+    flags: { [MODULE_ID]: { purchaseResult: { requestId, recipientId, result } } }
+  }).catch(error => console.error(`${MODULE_ID} | Could not send purchase result.`, error));
+}
+function purchaseApprovalCard({ requestId, requester, merchant, entry, quantity }) {
+  const escape = value => foundry.utils.escapeHTML(String(value ?? ""));
+  return `<div class="merchant-approval-card" data-request-id="${escape(requestId)}"><h3>Free Purchase Approval</h3><p><strong>${escape(requester.name)}</strong> requests ${quantity} × <strong>${escape(entry.name)}</strong> from ${escape(merchant.name)}.</p><p>This item has a total price of 0.</p><button type="button" data-merchant-approval="approve">Approve</button> <button type="button" data-merchant-approval="deny">Deny</button></div>`;
+}
+async function resolvePurchaseApproval(message, requestId, approved) {
+  if (!game.user.isGM || game.users.activeGM?.id !== game.user.id) return;
+  const approval = message.getFlag(MODULE_ID, "purchaseApproval");
+  const pending = pendingApprovals.get(requestId) ?? (approval?.request && approval?.requesterId
+    ? { request: approval.request, requesterId: approval.requesterId }
+    : null);
+  if (!pending) return;
+  pendingApprovals.delete(requestId);
+  const result = approved
+    ? await commitPurchase(pending.request, pending.requesterId)
+    : { success: false, message: "The GM declined this free-item purchase." };
+  const status = result.success ? "approved" : approved ? "failed" : "denied";
+  const safeText = foundry.utils.escapeHTML(result.message);
+  await message.update({
+    content: `<div class="merchant-approval-card"><h3>Free Purchase ${status}</h3><p>${safeText}</p></div>`,
+    [`flags.${MODULE_ID}.purchaseApproval.status`]: status
+  });
+  await sendPurchaseResult(pending.requesterId, requestId, result);
+}
+async function processPurchase(request, authenticatedUserId) {
   const previous = purchaseQueues.get(request.actorId) ?? Promise.resolve();
   let release;
   const current = new Promise(resolve => { release = resolve; });
   purchaseQueues.set(request.actorId, current);
   await previous;
-  try { return await commitPurchase(request); }
+  try {
+    const requester = game.users.get(authenticatedUserId);
+    const buyer = game.actors.get(request.buyerId);
+    const merchant = await resolveMerchant(request);
+    if (!requester || !buyer || !merchant || !isConfiguredShop(merchant)) return { success: false, message: "That merchant or buyer is no longer available." };
+    if (!requester.isGM && (requester.character?.id !== buyer.id || !buyer.testUserPermission(requester, CONST.DOCUMENT_OWNERSHIP_LEVELS.OWNER))) {
+      return { success: false, message: "You do not own the selected buyer character." };
+    }
+    const entry = (merchant.getFlag(MODULE_ID, "stock") ?? []).find(item => item.id === request.stockId);
+    const quantity = Math.floor(Number(request.quantity));
+    if (!entry || !Number.isSafeInteger(quantity) || quantity < 1 || Number(entry.quantity) < quantity) return commitPurchase(request, authenticatedUserId);
+    const price = entry.system?.price ?? {};
+    const rawPrice = price.value ?? price.amount;
+    const denomination = String(price.denomination ?? "gp").toLowerCase();
+    const unitCost = Math.round(Number(rawPrice) * CURRENCY[denomination]);
+    if (!requester.isGM && rawPrice !== undefined && rawPrice !== null && rawPrice !== "" && Number.isFinite(Number(rawPrice)) && Number(rawPrice) === 0) {
+      const mode = game.settings.get(MODULE_ID, "zeroPriceApproval");
+      if (mode === "dialog") {
+        const approved = await foundry.applications.api.DialogV2.confirm({
+          window: { title: "Approve Free Purchase" },
+          content: purchaseApprovalCard({ requestId: request.requestId, requester, merchant, entry, quantity }).replace(/<button[^>]*>[\s\S]*?<\/button>/g, ""),
+          rejectClose: false, modal: true,
+          yes: { label: "Approve" }, no: { label: "Deny" }
+        });
+        if (!approved) return { success: false, message: "The GM declined this free-item purchase." };
+      } else {
+        pendingApprovals.set(request.requestId, { request, requesterId: authenticatedUserId });
+        try {
+          await ChatMessage.create({
+            content: purchaseApprovalCard({ requestId: request.requestId, requester, merchant, entry, quantity }),
+            whisper: game.users.filter(user => user.isGM).map(user => user.id),
+            flags: { [MODULE_ID]: { purchaseApproval: { requestId: request.requestId, status: "pending", requesterId: authenticatedUserId, request } } }
+          });
+        } catch (error) {
+          pendingApprovals.delete(request.requestId);
+          throw error;
+        }
+        await sendPurchaseResult(authenticatedUserId, request.requestId, { success: true, pending: true, message: "Your free-item purchase request is waiting for GM approval." });
+        return { success: true, pending: true };
+      }
+    }
+    return await commitPurchase(request, authenticatedUserId);
+  }
   finally {
     release();
     if (purchaseQueues.get(request.actorId) === current) purchaseQueues.delete(request.actorId);
   }
 }
 
-async function commitPurchase({ actorId, actorUuid, buyerId, stockId, userId, quantity = 1 }) {
+async function commitPurchase({ actorId, actorUuid, buyerId, stockId, quantity = 1 }, authenticatedUserId) {
   // A shop can be opened from an unlinked token, where its synthetic actor may
   // have different stock from the base world actor with the same actor id.
   let merchant = actorUuid?.startsWith("Actor.") ? game.actors.get(actorId) : null;
   if (!merchant && actorUuid) merchant = await fromUuid(actorUuid).catch(() => null);
   merchant ??= game.actors.get(actorId);
-  const buyer = game.actors.get(buyerId), requestingUser = game.users.get(userId);
-  if (!merchant || !buyer || !requestingUser || (!requestingUser.isGM && requestingUser.character?.id !== buyer.id)) return { success: false, message: "The selected buyer is not assigned to your user." };
-  if (!requestingUser.isGM && !buyer.testUserPermission(requestingUser, CONST.DOCUMENT_OWNERSHIP_LEVELS.OWNER)) return { success: false, message: "You do not own that character." };
+  const buyer = game.actors.get(buyerId), requestingUser = game.users.get(authenticatedUserId);
+  if (!merchant || !buyer || !requestingUser || !isConfiguredShop(merchant)) return { success: false, message: "The selected merchant or buyer is no longer available." };
+  if (!requestingUser.isGM && (requestingUser.character?.id !== buyer.id || !buyer.testUserPermission(requestingUser, CONST.DOCUMENT_OWNERSHIP_LEVELS.OWNER))) return { success: false, message: "You do not own that character." };
   let stock = foundry.utils.deepClone(merchant.getFlag(MODULE_ID, "stock") ?? []), entry = stock.find(item => item.id === stockId);
   const count = Math.floor(Number(quantity));
   if (!Number.isSafeInteger(count) || count < 1) return { success: false, message: "Choose a valid purchase quantity." };
@@ -314,6 +455,10 @@ async function commitPurchase({ actorId, actorUuid, buyerId, stockId, userId, qu
       } catch (error) { console.warn(`${MODULE_ID} | Could not resolve source item; using saved shop item data instead.`, error); }
     }
     itemData ??= { name: entry.name, type: entry.type, img: entry.img, system: foundry.utils.deepClone(entry.system ?? {}) };
+    if (entry.sourceData) {
+      if (entry.sourceUuid) cachedSourceItemData.set(entry.sourceUuid, foundry.utils.deepClone(entry.sourceData));
+      delete entry.sourceData;
+    }
     delete itemData._id;
     delete itemData._stats;
     itemData.system ??= {};
@@ -351,13 +496,30 @@ async function commitPurchase({ actorId, actorUuid, buyerId, stockId, userId, qu
 }
 function requestPurchase(actorId, actorUuid, buyerId, stockId, quantity) {
   return new Promise(resolve => {
-    const requestId = foundry.utils.randomID(); pendingPurchases.set(requestId, resolve);
-    game.socket.emit(`module.${MODULE_ID}`, { kind: "purchase-request", requestId, actorId, actorUuid, buyerId, stockId, quantity, userId: game.user.id });
-      window.setTimeout(() => {
+    const requestId = foundry.utils.randomID();
+    const timeoutId = window.setTimeout(() => {
       if (!pendingPurchases.has(requestId)) return;
       pendingPurchases.delete(requestId);
-        resolve({ success: false, message: "The purchase could not be processed. An active GM must be connected to update the shop and complete the transaction." });
-      }, 130000);
+      resolve({ success: false, message: "The purchase request timed out. Check that a GM is connected and able to respond." });
+    }, 15 * 60 * 1000);
+    pendingPurchases.set(requestId, { resolve, timeoutId });
+    const activeGM = game.users.activeGM;
+    if (!activeGM) {
+      pendingPurchases.delete(requestId);
+      window.clearTimeout(timeoutId);
+      resolve({ success: false, message: "An active GM must be connected to process this purchase." });
+      return;
+    }
+    ChatMessage.create({
+      content: "",
+      whisper: [activeGM.id],
+      flags: { [MODULE_ID]: { purchaseRequest: { requestId, actorId, actorUuid, buyerId, stockId, quantity } } }
+    }).catch(error => {
+      pendingPurchases.delete(requestId);
+      window.clearTimeout(timeoutId);
+      console.error(`${MODULE_ID} | Could not send purchase request.`, error);
+      resolve({ success: false, message: "The purchase request could not be sent to the GM." });
+    });
   });
 }
 
@@ -421,20 +583,29 @@ class MerchantSheet extends HandlebarsApplicationMixin(ApplicationV2) {
   static async #onSubmit() {}
   static async #addItems() { new ItemBrowser(this.actor, this).render(true); }
   async addStock(source, quantity = 1) {
+    return this.addStockMany([{ source, quantity }]);
+  }
+  async addStockMany(records) {
+    if (!records.length) return;
     const stock = foundry.utils.deepClone(this.actor.getFlag(MODULE_ID, "stock") ?? []);
-    const sourceUuid = source._stats?.compendiumSource ?? source.uuid ?? (source._id ? `Item.${source._id}` : `${source.type}:${source.name}`);
-    const existing = stock.find(item => item.sourceUuid === sourceUuid || (!item.sourceUuid && item.name === source.name && item.type === source.type));
-    const sourceData = foundry.utils.deepClone(source);
-    delete sourceData._id;
-    delete sourceData._stats;
-    delete sourceData.uuid;
-    if (existing) {
-      existing.quantity = Number(existing.quantity ?? 0) + quantity;
-      existing.sourceData ??= sourceData;
+    for (const { source, quantity = 1 } of records) {
+      const sourceUuid = source._stats?.compendiumSource ?? source.uuid ?? (source._id ? `Item.${source._id}` : `${source.type}:${source.name}`);
+      const existing = stock.find(item => item.sourceUuid === sourceUuid || (!item.sourceUuid && item.name === source.name && item.type === source.type));
+      const sourceData = foundry.utils.deepClone(source);
+      delete sourceData._id;
+      delete sourceData._stats;
+      delete sourceData.uuid;
+      if (sourceUuid) cachedSourceItemData.set(sourceUuid, sourceData);
+      if (existing) {
+        existing.quantity = Number(existing.quantity ?? 0) + quantity;
+        if (existing.sourceData) {
+          if (existing.sourceUuid) cachedSourceItemData.set(existing.sourceUuid, foundry.utils.deepClone(existing.sourceData));
+          delete existing.sourceData;
+        }
+      }
+      else stock.push({ id: foundry.utils.randomID(), name: source.name, img: source.img ?? "icons/svg/item-bag.svg", type: source.type, system: foundry.utils.deepClone(source.system ?? {}), sourceUuid, quantity });
     }
-    else stock.push({ id: foundry.utils.randomID(), name: source.name, img: source.img ?? "icons/svg/item-bag.svg", type: source.type, system: foundry.utils.deepClone(source.system ?? {}), sourceData, sourceUuid, quantity });
-    await this.actor.setFlag(MODULE_ID, "stock", stock);
-    await this.actor.setFlag(MODULE_ID, "isShop", true);
+    await this.actor.update({ [`flags.${MODULE_ID}.stock`]: stock, [`flags.${MODULE_ID}.isShop`]: true });
     this.render();
   }
   static async #removeItem(_event, target) {
@@ -485,7 +656,7 @@ class MerchantSheet extends HandlebarsApplicationMixin(ApplicationV2) {
     const purchase = await promptPurchase({ item: stockEntry, buyer, stockEntry });
     if (!purchase) return;
     const result = game.user.isGM
-      ? await processPurchase({ actorId: this.actor.id, actorUuid: this.actor.uuid, buyerId: buyer.id, stockId: target.dataset.id, quantity: purchase.quantity, userId: game.user.id })
+      ? await processPurchase({ requestId: foundry.utils.randomID(), actorId: this.actor.id, actorUuid: this.actor.uuid, buyerId: buyer.id, stockId: target.dataset.id, quantity: purchase.quantity }, game.user.id)
       : await requestPurchase(this.actor.id, this.actor.uuid, buyer.id, target.dataset.id, purchase.quantity);
     if (!result?.success) return ui.notifications.warn(result?.message ?? "The purchase could not be completed.");
     ui.notifications.info(result.message ?? "Purchase completed.");
@@ -512,6 +683,7 @@ class ItemBrowser extends HandlebarsApplicationMixin(ApplicationV2) {
     this.loadingDialog = null;
     this.loadingStartedAt = 0;
     this.filterLoading = false;
+    catalogSubscribers.add(this);
   }
   static DEFAULT_OPTIONS = {
     id: "merchant-item-browser", tag: "form", classes: ["merchant-item-browser"], window: { title: "Add Items to Shop", resizable: true }, position: { width: 1050, height: 720 },
@@ -540,18 +712,13 @@ class ItemBrowser extends HandlebarsApplicationMixin(ApplicationV2) {
   }
   _onRender(context, options) {
     super._onRender?.(context, options);
-    if (this.filterLoading) {
-      this.filterLoading = false;
-      this.#hideLoadingDialog();
-    }
     const refresh = () => {
       this.search = this.element.querySelector("[name='itemSearch']")?.value ?? "";
       this.render();
     };
     for (const checkbox of this.element.querySelectorAll("[name='itemType']")) checkbox.addEventListener("change", () => {
       this.selectedTypes = new Set([...this.element.querySelectorAll("[name='itemType']:checked")].map(input => input.value));
-      this.filterLoading = true;
-      this.#showLoadingDialog();
+      this.selectedSources = null;
       refresh();
     });
     for (const checkbox of this.element.querySelectorAll("[name='itemSource']")) checkbox.addEventListener("change", () => {
@@ -565,34 +732,36 @@ class ItemBrowser extends HandlebarsApplicationMixin(ApplicationV2) {
     if (this.catalog) return this.catalog;
     if (indexedCatalog) {
       this.catalog = indexedCatalog;
+      if (indexingCatalog) this.#showLoadingDialog();
       return indexedCatalog;
     }
-    if (indexingCatalog) {
-      this.catalog = await indexingCatalog;
-      return this.catalog;
-    }
     this.#showLoadingDialog();
-    indexingCatalog = (async () => {
-      const sources = [];
-      const worldItems = game.items.contents.map(item => ({ _id: item.id, name: item.name, img: item.img, type: item.type, category: classifyItem(item), description: stripHTML(item.system?.description?.value ?? item.system?.description ?? ""), source: "world-items" })).filter(item => item.category);
-      if (worldItems.length) sources.push({ id: "world-items", label: "World Items", items: worldItems, world: true });
-      for (const pack of game.packs.filter(candidate => candidate.documentName === "Item")) {
-        await pack.getIndex({ fields: ["system.type.value", "system.armor", "system.rarity", "system.attunement", "system.properties", "system.magical", "system.identifier", "system.description.value", "system.description"] });
-        const items = [...pack.index].map(entry => ({ _id: entry._id, name: entry.name, img: entry.img, type: entry.type, category: classifyItem(entry), description: stripHTML(entry.system?.description?.value ?? entry.system?.description ?? ""), source: pack.collection })).filter(item => item.category);
-        if (items.length >= 5) sources.push({ id: pack.collection, label: pack.title, items, world: false });
-      }
-      sources.sort((a, b) => a.label.localeCompare(b.label));
-      indexedCatalog = sources;
-      return sources;
-    })();
-    try {
-      this.catalog = await indexingCatalog;
-      return this.catalog;
+    const worldItems = game.items.contents.map(item => ({ _id: item.id, name: item.name, img: item.img, type: item.type, category: classifyItem(item), description: stripHTML(item.system?.description?.value ?? item.system?.description ?? ""), source: "world-items" })).filter(item => item.category);
+    indexedCatalog = worldItems.length ? [{ id: "world-items", label: "World Items", items: worldItems, world: true }] : [];
+    this.catalog = indexedCatalog;
+    if (!indexingCatalog) {
+      const packs = game.packs.filter(candidate => candidate.documentName === "Item");
+      indexingCatalog = mapWithConcurrency(packs, 4, async pack => {
+        try {
+          const source = await withTimeout((async () => {
+            await pack.getIndex({ fields: ["system.type.value", "system.armor", "system.rarity", "system.attunement", "system.properties", "system.magical", "system.identifier", "system.description.value", "system.description"] });
+            const items = [...pack.index].map(entry => ({ _id: entry._id, name: entry.name, img: entry.img, type: entry.type, category: classifyItem(entry), description: stripHTML(entry.system?.description?.value ?? entry.system?.description ?? ""), source: pack.collection })).filter(item => item.category);
+            return items.length >= 5 ? { id: pack.collection, label: pack.title, items, world: false } : null;
+          })(), 5000, `Compendium ${pack.title}`);
+          if (!source) return;
+          if (!indexedCatalog.some(existing => existing.id === source.id)) indexedCatalog.push(source);
+          indexedCatalog.sort((a, b) => a.label.localeCompare(b.label));
+          refreshCatalogBrowsers();
+        } catch (error) {
+          console.warn(`${MODULE_ID} | Skipping compendium '${pack.title}' after a load failure or 5-second timeout.`, error);
+        }
+      }).then(() => indexedCatalog).finally(() => {
+        indexingCatalog = null;
+        for (const browser of catalogSubscribers) browser.#hideLoadingDialog();
+      });
     }
-    finally {
-      this.#hideLoadingDialog();
-      indexingCatalog = null;
-    }
+    refreshCatalogBrowsers();
+    return indexedCatalog;
   }
   async _prepareContext() {
     const sources = await this.#loadCatalog();
@@ -611,8 +780,22 @@ class ItemBrowser extends HandlebarsApplicationMixin(ApplicationV2) {
       .filter(item => this.selectedTypes.has(item.category) && (!query || item.name.toLowerCase().includes(query)))
       .map(item => ({ ...item, typeLabel: ITEM_CATEGORIES.find(([value]) => value === item.category)?.[1] ?? item.type, sourceLabel: sources.find(source => source.id === item.source)?.label ?? item.source })))
       .sort((a, b) => a.name.localeCompare(b.name));
-    const tables = await getRollTables(this.selectedTypes);
+    let tables = [];
+    if (this.selectedTypes.size) {
+      if (indexedRollTableCatalog) {
+        tables = indexedRollTableCatalog.filter(table => table.categories.some(category => this.selectedTypes.has(category))).map(({ uuid, name, source }) => ({ uuid, name, source }));
+      } else {
+        void getRollTables(new Set(this.selectedTypes)).then(() => {
+          if (this.element?.isConnected) this.render();
+        }).catch(error => console.warn(`${MODULE_ID} | Could not index rollable tables.`, error));
+      }
+    }
     return { actor: this.actor, types: typeOptions, sources: sourceOptions, items: this.visibleItems, tables, search: this.search, randomCount: game.settings.get(MODULE_ID, "randomCount"), isGM: game.user.isGM };
+  }
+  _onClose(options) {
+    catalogSubscribers.delete(this);
+    this.#hideLoadingDialog();
+    return super._onClose?.(options);
   }
   static async #onSubmit() {}
   async #resolveItem(sourceId, itemId) {
@@ -630,10 +813,8 @@ class ItemBrowser extends HandlebarsApplicationMixin(ApplicationV2) {
     const shuffled = [...this.visibleItems];
     for (let i = shuffled.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]]; }
     const selected = shuffled.slice(0, count);
-    for (const record of selected) {
-      const item = await this.#resolveItem(record.source, record._id);
-      if (item) await this.merchantSheet.addStock(item.toObject());
-    }
+    const items = (await mapWithConcurrency(selected, 6, record => this.#resolveItem(record.source, record._id))).filter(Boolean);
+    if (items.length) await this.merchantSheet.addStockMany(items.map(item => ({ source: item.toObject(), quantity: 1 })));
     if (!selected.length) ui.notifications.warn("No items match the selected item types and compendiums.");
     else ui.notifications.info(`Added ${selected.length} random item${selected.length === 1 ? "" : "s"} to the shop.`);
   }
@@ -642,7 +823,7 @@ class ItemBrowser extends HandlebarsApplicationMixin(ApplicationV2) {
     const draws = Math.max(1, Math.min(100, Number(this.element.querySelector("[name='tableDraws']")?.value ?? 1)));
     const table = uuid && await fromUuid(uuid);
     if (!table) return ui.notifications.warn("Choose a rollable table first.");
-    let added = 0;
+    const items = [];
     for (let i = 0; i < draws; i++) {
       const draw = await table.draw({ displayChat: false, recursive: true });
       for (const result of draw.results ?? []) {
@@ -658,10 +839,13 @@ class ItemBrowser extends HandlebarsApplicationMixin(ApplicationV2) {
             try { item = await fromUuid(uuid); } catch { /* Ignore non-item table results. */ }
           }
         }
-        if (isItemDocument(item) && this.selectedTypes.has(classifyItem(item))) { await this.merchantSheet.addStock(item.toObject()); added++; }
+        if (isItemDocument(item) && this.selectedTypes.has(classifyItem(item))) items.push(item.toObject());
       }
     }
-    if (added) ui.notifications.info(`Added ${added} item result${added === 1 ? "" : "s"} from ${table.name}.`);
+    if (items.length) {
+      await this.merchantSheet.addStockMany(items.map(source => ({ source, quantity: 1 })));
+      ui.notifications.info(`Added ${items.length} item result${items.length === 1 ? "" : "s"} from ${table.name}.`);
+    }
     else ui.notifications.warn("The selected table returned no linked Item documents. Link its results to Item documents to stock them automatically.");
   }
   static async #done() { this.close(); }
@@ -669,29 +853,48 @@ class ItemBrowser extends HandlebarsApplicationMixin(ApplicationV2) {
 
 async function getRollTables(selectedTypes = new Set()) {
   if (!selectedTypes.size) return [];
-  const tables = [];
-  const addIfMatching = async (table, source) => {
-    const matching = await Promise.all([...table.results].map(async result => {
-      let item;
-      try { item = await result.getDocument?.(); } catch { /* Check document UUID fields next. */ }
-      if (!isItemDocument(item) && result.documentUuid) {
-        try { item = await fromUuid(result.documentUuid); } catch { /* Ignore unavailable result documents. */ }
-      }
-      if (!isItemDocument(item) && result.documentCollection && result.documentId) {
-        const uuid = result.documentCollection === "world.items" ? `Item.${result.documentId}` : `${result.documentCollection.startsWith("Compendium.") ? "" : "Compendium."}${result.documentCollection}.${result.documentId}`;
-        try { item = await fromUuid(uuid); } catch { /* Ignore non-item table results. */ }
-      }
-      return isItemDocument(item) && selectedTypes.has(classifyItem(item));
-    }));
-    if (matching.some(Boolean)) tables.push({ uuid: table.uuid, name: table.name, source });
-  };
-  for (const table of game.tables.contents) await addIfMatching(table, "World Tables");
-  for (const pack of game.packs.filter(candidate => candidate.documentName === "RollTable")) {
-    await pack.getIndex();
-    for (const entry of pack.index) {
-      const table = await pack.getDocument(entry._id);
-      if (table) await addIfMatching(table, pack.title);
+  if (!indexedRollTableCatalog) {
+    if (!indexingRollTableCatalog) {
+      indexingRollTableCatalog = (async () => {
+        const tableRecords = game.tables.contents.map(table => ({ table, source: "World Tables" }));
+        const rollTablePacks = game.packs.filter(candidate => candidate.documentName === "RollTable");
+        const packTableRecords = await mapWithConcurrency(rollTablePacks, 4, async pack => {
+          try {
+            return await withTimeout((async () => {
+              await pack.getIndex();
+              return (await mapWithConcurrency([...pack.index], 8, entry => pack.getDocument(entry._id)))
+                .filter(Boolean).map(table => ({ table, source: pack.title }));
+            })(), 5000, `Roll table compendium ${pack.title}`);
+          } catch (error) {
+            console.warn(`${MODULE_ID} | Skipping roll table compendium '${pack.title}' after a load failure or 5-second timeout.`, error);
+            return [];
+          }
+        });
+        tableRecords.push(...packTableRecords.flat());
+        const categoriesByTable = new Map(tableRecords.map(({ table }) => [table.uuid, new Set()]));
+        const resultJobs = tableRecords.flatMap(({ table }) => [...table.results].map(result => ({ table, result })));
+        await mapWithConcurrency(resultJobs, 12, async ({ table, result }) => {
+          let item;
+          try { item = await result.getDocument?.(); } catch { /* Resolve linked UUIDs below. */ }
+          if (!isItemDocument(item) && result.documentUuid) {
+            try { item = await fromUuid(result.documentUuid); } catch { /* Ignore unresolved results. */ }
+          }
+          if (!isItemDocument(item) && result.documentCollection && result.documentId) {
+            const uuid = result.documentCollection === "world.items" ? `Item.${result.documentId}` : `${result.documentCollection.startsWith("Compendium.") ? "" : "Compendium."}${result.documentCollection}.${result.documentId}`;
+            try { item = await fromUuid(uuid); } catch { /* Ignore non-item results. */ }
+          }
+          const category = isItemDocument(item) && classifyItem(item);
+          if (category) categoriesByTable.get(table.uuid)?.add(category);
+        });
+        indexedRollTableCatalog = tableRecords.map(({ table, source }) => ({
+          uuid: table.uuid, name: table.name, source,
+          categories: [...(categoriesByTable.get(table.uuid) ?? [])]
+        })).filter(table => table.categories.length).sort((a, b) => a.name.localeCompare(b.name));
+        return indexedRollTableCatalog;
+      })();
     }
+    try { await indexingRollTableCatalog; }
+    finally { indexingRollTableCatalog = null; }
   }
-  return tables.sort((a, b) => a.name.localeCompare(b.name));
+  return indexedRollTableCatalog.filter(table => table.categories.some(category => selectedTypes.has(category))).map(({ uuid, name, source }) => ({ uuid, name, source }));
 }
