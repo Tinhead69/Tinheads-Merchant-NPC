@@ -273,12 +273,17 @@ Hooks.once("ready", () => {
     const root = html instanceof HTMLElement ? html : html?.[0];
     const header = root?.querySelector(".window-header");
     if (!header || header.querySelector(".merchant-open")) return;
-    const button = document.createElement("a");
+    const button = document.createElement("button");
+    button.type = "button";
     button.className = "header-control merchant-open";
-    button.innerHTML = '<i class="fas fa-store"></i> Shop';
+    button.innerHTML = '<i class="fas fa-store" aria-hidden="true"></i>';
+    button.setAttribute("aria-label", "Open merchant shop");
     button.title = "Open merchant shop";
     button.addEventListener("click", (event) => { event.preventDefault(); game.merchantNPC.open(actor); });
-    header.insertBefore(button, header.querySelector(".window-controls") ?? null);
+    const controlsMenu = app.window?.controls
+      ?? header.querySelector("button[data-action='toggleControls'], .window-controls button:first-of-type");
+    if (controlsMenu?.parentElement) controlsMenu.after(button);
+    else header.append(button);
   };
   Hooks.on("renderActorSheetV2", addMerchantButton);
   Hooks.on("renderActorSheet", addMerchantButton);
@@ -773,21 +778,39 @@ async function processSaleResponse(response, authenticatedUserId) {
   if (!rollMessage || rollAuthorId !== authenticatedUserId || rollMessage.speaker?.actor !== sale.buyer.id || rollFlag?.requestId !== response.requestId || rollFlag?.actorId !== sale.buyer.id || !Number.isFinite(rollTotal)) {
     return sendSaleOffer(sale, { outcome: "The Persuasion roll could not be verified. The current offer remains open.", persuasionUsed: false });
   }
-  const insight = sale.merchant.system.skills?.ins;
-  const wisdom = sale.merchant.system.abilities?.wis;
-  const proficiency = Number(sale.merchant.system.attributes?.prof ?? 0);
-  const insightBonus = Number(insight?.total ?? insight?.mod ?? (Number(wisdom?.mod ?? 0) + proficiency * Number(insight?.value ?? 0)));
-  const insightRoll = await new Roll(`1d20 + (${insightBonus})`).evaluate();
-  await insightRoll.toMessage({ speaker: ChatMessage.getSpeaker({ actor: sale.merchant }), flavor: `Insight contest against ${sale.buyer.name}'s Persuasion`, whisper: game.users.filter(user => user.isGM).map(user => user.id) });
+  let insightRoll;
+  try {
+    insightRoll = await rollMerchantInsight(sale.merchant);
+  } catch (error) {
+    console.error(`${MODULE_ID} | Merchant Insight roll failed.`, error);
+  }
+  if (!insightRoll || !Number.isFinite(insightRoll.total)) {
+    return sendSaleOffer(sale, { outcome: "The merchant's Insight roll was cancelled or unavailable. The current offer remains open.", persuasionUsed: false });
+  }
   sale.persuasionUsed = true;
   if (rollTotal > insightRoll.total) {
     const rollSummary = `${sale.buyer.name} Persuasion: ${rollTotal}. ${sale.merchant.name} Insight: ${insightRoll.total}. The character won and may receive a revised offer.`;
     const revised = await promptGmSaleOffer(sale, { previous: sale.currentOffer, rollSummary });
     if (revised && !revised.keep) { sale.currentOffer = revised; sale.persuasionBonus = revised.persuasionBonus; }
-    await sendSaleOffer(sale, { outcome: rollSummary, persuasionUsed: true });
+    await sendSaleOffer(sale, { outcome: "Your Persuasion check succeeded. The merchant is reconsidering the offer.", persuasionUsed: true });
   } else {
     const rollSummary = `${sale.buyer.name} Persuasion: ${rollTotal}. ${sale.merchant.name} Insight: ${insightRoll.total}. The merchant held firm; the offer is unchanged.`;
-    await sendSaleOffer(sale, { outcome: rollSummary, persuasionUsed: true });
+    await sendSaleOffer(sale, { outcome: "The merchant was not persuaded. The offer remains unchanged.", persuasionUsed: true });
+  }
+}
+async function rollMerchantInsight(merchant) {
+  let hookedRoll = null;
+  const hookId = Hooks.on("dnd5e.rollSkill", (rolls, data) => {
+    if (data?.skill !== "ins" || data?.subject?.uuid !== merchant.uuid) return;
+    hookedRoll = rolls?.find(roll => Number.isFinite(roll?.total)) ?? null;
+  });
+  try {
+    // Use dnd5e's own skill workflow so its roll dialog, roll mode, bonuses,
+    // and other modules' skill-roll hooks are available to the GM.
+    const result = await merchant.rollSkill({ skill: "ins" });
+    return hookedRoll ?? (Number.isFinite(result?.total) ? result : null);
+  } finally {
+    Hooks.off("dnd5e.rollSkill", hookId);
   }
 }
 async function commitSale(sale) {
