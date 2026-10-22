@@ -1,0 +1,21 @@
+<section class="merchant-sale-sheet-layout">
+  <p>Drag items from your inventory into the area below. Choose the quantity for each item, then send the list to {{merchant.name}}.</p>
+  <div class="merchant-sale-drop-area">Drop inventory items here</div>
+  <ul class="merchant-sale-list">
+    {{#each items as |item|}}
+      <li>
+        <img src="{{item.img}}" alt="">
+        <div><strong>{{item.name}}</strong><small>{{item.valueText}} · {{item.available}} available</small></div>
+        <label>Qty<input type="number" name="sellQuantity" data-id="{{item.id}}" min="1" max="{{item.available}}" step="1" value="{{item.quantity}}"></label>
+        <button type="button" data-action="removeItem" data-id="{{item.id}}">Remove</button>
+      </li>
+    {{else}}
+      <li class="empty">No items selected yet.</li>
+    {{/each}}
+  </ul>
+  <p class="merchant-sale-status">{{items.length}} item type(s) ready to send.</p>
+  <footer class="merchant-sale-sheet-actions">
+    <button type="button" data-action="cancel">Cancel</button>
+    <button type="button" data-action="submit" {{#unless hasItems}}disabled{{/unless}}>Confirm Items</button>
+  </footer>
+</section>

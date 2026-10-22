@@ -2,6 +2,7 @@
   <header class="merchant-heading">
     <img src="{{actor.img}}" alt="">
     <div><h2>{{actor.name}}</h2><p>{{funds}}</p></div>
+    {{#unless isGM}}<button type="button" class="merchant-sell-open" data-action="sellItems"><i class="fas fa-coins"></i> Sell Items</button>{{/unless}}
   </header>
 
   {{#if isGM}}
@@ -18,7 +19,7 @@
   {{/if}}
 
   <section class="merchant-stock-area">
-    <h3>Shop Items <span>{{stock.length}} listed</span>{{#unless isGM}}<button type="button" class="merchant-sell-open" data-action="sellItems"><i class="fas fa-coins"></i> Sell Items</button>{{/unless}}</h3>
+    <h3>Shop Items <span>{{stock.length}} listed</span></h3>
     <ul class="merchant-stock">
       {{#each stock as |item|}}
         <li class="merchant-item {{#if @root.isGM}}merchant-item-gm{{/if}}" data-stock-id="{{item.id}}">

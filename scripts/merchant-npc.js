@@ -11,6 +11,7 @@ const pendingApprovals = new Map();
 const pendingSales = new Map();
 const cachedSourceItemData = new Map();
 const catalogSubscribers = new Set();
+let catalogRefreshPending = false;
 // Keep the indexed catalog for this client session so reopening Add Items does
 // not repeat compendium indexing and item/description classification.
 let indexedCatalog = null;
@@ -34,10 +35,15 @@ async function mapWithConcurrency(items, limit, callback) {
 }
 function isConfiguredShop(actor) { return Boolean(actor?.type === "npc" && actor.getFlag(MODULE_ID, "isShop") === true); }
 function refreshCatalogBrowsers() {
-  for (const browser of catalogSubscribers) {
-    browser.catalog = indexedCatalog;
-    if (browser.element?.isConnected) browser.render();
-  }
+  if (catalogRefreshPending) return;
+  catalogRefreshPending = true;
+  requestAnimationFrame(() => {
+    catalogRefreshPending = false;
+    for (const browser of catalogSubscribers) {
+      browser.catalog = indexedCatalog;
+      if (browser.element?.isConnected) browser.render();
+    }
+  });
 }
 function withTimeout(promise, milliseconds, label) {
   let timer;
@@ -319,70 +325,6 @@ function saleOverlay(title, className = "") {
   overlay.append(panel);
   document.body.append(overlay);
   return { overlay, panel };
-}
-function promptSellItems(actor, merchant) {
-  return new Promise(resolve => {
-    const { overlay, panel } = saleOverlay(`Sell items to ${merchant.name}`, "merchant-sale-picker");
-    const instructions = document.createElement("p");
-    instructions.textContent = "Drag items from your inventory into the box below. Set the quantity for each item, then send the list to the merchant.";
-    const dropArea = document.createElement("div");
-    dropArea.className = "merchant-sale-drop-area";
-    dropArea.textContent = "Drop inventory items here";
-    const list = document.createElement("ul");
-    list.className = "merchant-sale-list";
-    const status = document.createElement("p");
-    status.className = "merchant-sale-status";
-    const actions = document.createElement("div");
-    actions.className = "purchase-dialog-actions";
-    const cancel = document.createElement("button");
-    cancel.type = "button";
-    cancel.textContent = "Cancel";
-    const submit = document.createElement("button");
-    submit.type = "button";
-    submit.textContent = "Confirm Items";
-    submit.disabled = true;
-    actions.append(cancel, submit);
-    panel.append(instructions, dropArea, list, status, actions);
-    const staged = new Map();
-    const close = result => { overlay.remove(); resolve(result); };
-    const render = () => {
-      list.replaceChildren();
-      for (const record of staged.values()) {
-        const row = document.createElement("li");
-        const image = document.createElement("img"); image.src = record.item.img; image.alt = "";
-        const name = document.createElement("strong"); name.textContent = record.item.name;
-        const value = document.createElement("small"); value.textContent = itemPriceCopper(record.item) === null ? "Value not set" : `Value ${priceLabel(record.item.system?.price ?? {})} each`;
-        const quantity = document.createElement("input"); quantity.type = "number"; quantity.min = "1"; quantity.max = String(record.available); quantity.step = "1"; quantity.value = String(record.quantity); quantity.setAttribute("aria-label", `Quantity of ${record.item.name}`);
-        quantity.addEventListener("change", () => { record.quantity = Math.max(1, Math.min(record.available, Math.floor(Number(quantity.value) || 1))); quantity.value = String(record.quantity); });
-        const remove = document.createElement("button"); remove.type = "button"; remove.textContent = "Remove";
-        remove.addEventListener("click", () => { staged.delete(record.item.id); render(); });
-        const details = document.createElement("div"); details.append(name, value);
-        row.append(image, details, quantity, remove); list.append(row);
-      }
-      submit.disabled = staged.size === 0;
-      status.textContent = staged.size ? `${staged.size} item type${staged.size === 1 ? "" : "s"} ready to send.` : "No items selected yet.";
-    };
-    dropArea.addEventListener("dragover", event => { event.preventDefault(); dropArea.classList.add("drag-active"); });
-    dropArea.addEventListener("dragleave", () => dropArea.classList.remove("drag-active"));
-    dropArea.addEventListener("drop", async event => {
-      event.preventDefault(); dropArea.classList.remove("drag-active");
-      let data;
-      try { data = TextEditor.getDragEventData(event); } catch { data = null; }
-      if (data?.type !== "Item" || !data.uuid) return ui.notifications.warn("Drop an item from your character's inventory.");
-      const item = await fromUuid(data.uuid).catch(() => null);
-      if (!item || item.parent?.id !== actor.id || !actor.items.has(item.id)) return ui.notifications.warn("Only items in your assigned character's inventory can be sold.");
-      const available = itemQuantity(item);
-      if (!available) return ui.notifications.warn(`${item.name} has no sellable quantity.`);
-      const existing = staged.get(item.id);
-      staged.set(item.id, { item, available, quantity: Math.min(available, (existing?.quantity ?? 0) + 1) });
-      render();
-    });
-    cancel.addEventListener("click", () => close(null));
-    submit.addEventListener("click", () => close([...staged.values()].map(record => ({ itemId: record.item.id, quantity: record.quantity }))));
-    overlay.addEventListener("click", event => { if (event.target === overlay) close(null); });
-    overlay.addEventListener("keydown", event => { if (event.key === "Escape") close(null); });
-    render();
-  });
 }
 async function requestSale(actor, merchant, items) {
   const activeGM = game.users.activeGM;
@@ -952,6 +894,70 @@ async function commitSale(sale) {
 }
 const { ApplicationV2, HandlebarsApplicationMixin } = foundry.applications.api;
 
+class SellItemsSheet extends HandlebarsApplicationMixin(ApplicationV2) {
+  constructor(actor, merchant) {
+    super({ id: `merchant-sell-items-${merchant.id}-${actor.id}` });
+    this.actor = actor;
+    this.merchant = merchant;
+    this.staged = new Map();
+  }
+  static DEFAULT_OPTIONS = {
+    id: "merchant-sell-items", tag: "form", classes: ["merchant-npc", "merchant-sell-sheet"],
+    window: { title: "Sell Items", resizable: true }, position: { width: 640, height: 500 },
+    actions: { removeItem: SellItemsSheet.#removeItem, cancel: SellItemsSheet.#cancel, submit: SellItemsSheet.#submit }
+  };
+  static PARTS = { form: { template: "modules/merchant-npc/templates/sell-items-sheet.hbs" } };
+  async _prepareContext() {
+    return {
+      actor: this.actor,
+      merchant: this.merchant,
+      items: [...this.staged.values()].map(record => ({
+        id: record.item.id, name: record.item.name, img: record.item.img,
+        quantity: record.quantity, available: record.available,
+        valueText: itemPriceCopper(record.item) === null ? "Value not set" : `Value ${priceLabel(record.item.system?.price ?? {})} each`
+      })),
+      hasItems: this.staged.size > 0
+    };
+  }
+  _onRender(context, options) {
+    super._onRender?.(context, options);
+    const dropArea = this.element.querySelector(".merchant-sale-drop-area");
+    if (!dropArea) return;
+    dropArea.addEventListener("dragover", event => { event.preventDefault(); dropArea.classList.add("drag-active"); });
+    dropArea.addEventListener("dragleave", () => dropArea.classList.remove("drag-active"));
+    dropArea.addEventListener("drop", async event => {
+      event.preventDefault(); dropArea.classList.remove("drag-active");
+      let data;
+      try { data = TextEditor.getDragEventData(event); } catch { data = null; }
+      if (data?.type !== "Item" || !data.uuid) return ui.notifications.warn("Drop an item from your character's inventory.");
+      const item = await fromUuid(data.uuid).catch(() => null);
+      if (!item || item.parent?.id !== this.actor.id || !this.actor.items.has(item.id)) return ui.notifications.warn("Only items in your assigned character's inventory can be sold.");
+      const available = itemQuantity(item);
+      if (!available) return ui.notifications.warn(`${item.name} has no sellable quantity.`);
+      const existing = this.staged.get(item.id);
+      this.staged.set(item.id, { item, available, quantity: Math.min(available, (existing?.quantity ?? 0) + 1) });
+      this.render();
+    });
+    for (const input of this.element.querySelectorAll("[name='sellQuantity']")) input.addEventListener("change", () => {
+      const record = this.staged.get(input.dataset.id);
+      if (!record) return;
+      record.quantity = Math.max(1, Math.min(record.available, Math.floor(Number(input.value) || 1)));
+      input.value = String(record.quantity);
+    });
+  }
+  static async #removeItem(_event, target) {
+    this.staged.delete(target.dataset.id);
+    this.render();
+  }
+  static async #cancel() { this.close(); }
+  static async #submit() {
+    if (!this.staged.size) return;
+    const items = [...this.staged.values()].map(record => ({ itemId: record.item.id, quantity: record.quantity }));
+    await this.close();
+    await requestSale(this.actor, this.merchant, items);
+  }
+}
+
 class MerchantSheet extends HandlebarsApplicationMixin(ApplicationV2) {
   constructor(actor, options = {}) {
     super({ ...options, id: `merchant-npc-${actor.id}` });
@@ -1096,8 +1102,7 @@ class MerchantSheet extends HandlebarsApplicationMixin(ApplicationV2) {
   static async #sellItems() {
     const buyer = game.user.character;
     if (!buyer) return ui.notifications.warn("Assign your user a character in User Configuration before selling items.");
-    const items = await promptSellItems(buyer, this.actor);
-    if (items?.length) await requestSale(buyer, this.actor, items);
+    new SellItemsSheet(buyer, this.actor).render(true);
   }
   _onDrop(event) {
     const data = TextEditor.getDragEventData(event);
@@ -1203,20 +1208,30 @@ class ItemBrowser extends HandlebarsApplicationMixin(ApplicationV2) {
   async _prepareContext() {
     const sources = await this.#loadCatalog();
     const typeOptions = ITEM_CATEGORIES.map(([value, label]) => ({ value, label, checked: this.selectedTypes.has(value) }));
-    const matchingSources = sources.filter(source => {
-      const matchingCount = source.items.filter(item => this.selectedTypes.has(item.category)).length;
-      // The five-item minimum applies to the compendium as a whole, not to each
-      // selected category. Otherwise a pack with only one magical item is hidden.
-      return matchingCount > 0;
-    });
-    if (this.selectedSources === null && this.selectedTypes.size) this.selectedSources = new Set(matchingSources.map(source => source.id));
-    if (this.selectedSources) this.selectedSources = new Set([...this.selectedSources].filter(id => sources.some(source => source.id === id)));
-    const sourceOptions = matchingSources.map(source => ({ id: source.id, label: source.label, count: source.items.filter(item => this.selectedTypes.has(item.category)).length, checked: this.selectedSources.has(source.id) }));
+    const matchingSources = [];
+    for (const source of sources) {
+      let matchingCount = 0;
+      for (const item of source.items) if (this.selectedTypes.has(item.category)) matchingCount++;
+      if (matchingCount) matchingSources.push({ source, matchingCount });
+    }
+    if (this.selectedSources === null && this.selectedTypes.size) this.selectedSources = new Set(matchingSources.map(({ source }) => source.id));
+    if (this.selectedSources) {
+      const sourceIds = new Set(sources.map(source => source.id));
+      this.selectedSources = new Set([...this.selectedSources].filter(id => sourceIds.has(id)));
+    }
+    const sourceOptions = matchingSources.map(({ source, matchingCount }) => ({ id: source.id, label: source.label, count: matchingCount, checked: this.selectedSources.has(source.id) }));
     const query = this.search.trim().toLowerCase();
-    this.visibleItems = matchingSources.filter(source => this.selectedSources?.has(source.id)).flatMap(source => source.items
-      .filter(item => this.selectedTypes.has(item.category) && (!query || item.name.toLowerCase().includes(query)))
-      .map(item => ({ ...item, typeLabel: ITEM_CATEGORIES.find(([value]) => value === item.category)?.[1] ?? item.type, sourceLabel: sources.find(source => source.id === item.source)?.label ?? item.source })))
-      .sort((a, b) => a.name.localeCompare(b.name));
+    const typeLabels = new Map(ITEM_CATEGORIES);
+    const sourceLabels = new Map(sources.map(source => [source.id, source.label]));
+    this.visibleItems = [];
+    for (const { source } of matchingSources) {
+      if (!this.selectedSources?.has(source.id)) continue;
+      for (const item of source.items) {
+        if (!this.selectedTypes.has(item.category) || (query && !item.name.toLowerCase().includes(query))) continue;
+        this.visibleItems.push({ ...item, typeLabel: typeLabels.get(item.category) ?? item.type, sourceLabel: sourceLabels.get(item.source) ?? item.source });
+      }
+    }
+    this.visibleItems.sort((a, b) => a.name.localeCompare(b.name));
     let tables = [];
     if (this.selectedTypes.size) {
       if (indexedRollTableCatalog) {
