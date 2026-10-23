@@ -34,6 +34,10 @@ async function mapWithConcurrency(items, limit, callback) {
   return results;
 }
 function isConfiguredShop(actor) { return Boolean(actor?.type === "npc" && actor.getFlag(MODULE_ID, "isShop") === true); }
+function isMonsterActor(actor) {
+  const source = actor?._stats?.compendiumSource ?? actor?.getFlag("core", "sourceId") ?? "";
+  return /monster/i.test(source);
+}
 function refreshCatalogBrowsers() {
   if (catalogRefreshPending) return;
   catalogRefreshPending = true;
@@ -82,7 +86,8 @@ function hasMagicalProperty(properties) {
   return false;
 }
 function classifyItem(item) {
-  if (item.type === "spell") return null;
+  // Feats include D&D 5e class features; they are not shop inventory items.
+  if (["spell", "feat", "class", "subclass"].includes(String(item.type ?? "").toLowerCase())) return null;
   const system = item.system ?? {};
   const subtype = String(system.type?.value ?? system.type ?? system.consumableType ?? "").toLowerCase();
   const magical = system.magical === true || String(system.magical).toLowerCase() === "magical" || hasMagicalProperty(system.properties) || hasMagicalProperty(item.properties);
@@ -269,7 +274,7 @@ Hooks.once("ready", () => {
       });
       return;
     }
-    if (!configuredShop) return;
+    if (!configuredShop && isMonsterActor(actor)) return;
     const root = html instanceof HTMLElement ? html : html?.[0];
     const header = root?.querySelector(".window-header");
     if (!header || header.querySelector(".merchant-open")) return;
@@ -277,8 +282,8 @@ Hooks.once("ready", () => {
     button.type = "button";
     button.className = "header-control merchant-open";
     button.innerHTML = '<i class="fas fa-store" aria-hidden="true"></i>';
-    button.setAttribute("aria-label", "Open merchant shop");
-    button.title = "Open merchant shop";
+    button.setAttribute("aria-label", configuredShop ? "Open merchant shop" : "Set up merchant shop");
+    button.title = configuredShop ? "Open merchant shop" : "Set up merchant shop";
     button.addEventListener("click", (event) => { event.preventDefault(); game.merchantNPC.open(actor); });
     const controlsMenu = app.window?.controls
       ?? header.querySelector("button[data-action='toggleControls'], .window-controls button:first-of-type");
@@ -1174,6 +1179,7 @@ class MerchantSheet extends HandlebarsApplicationMixin(ApplicationV2) {
       stockTypeFilter: this.stockTypeFilter,
       allStockTypesActive: this.stockTypeFilter === "all",
       isGM: game.user.isGM,
+      canPurchase: !game.user.isGM && game.user.character?.type === "character",
       shopTypeLabel: SHOP_TYPES[this.shopType] ?? SHOP_TYPES.general,
       shopType: this.shopType,
       shopTypeOptions: Object.entries(SHOP_TYPES).map(([value, label]) => ({ value, label, selected: value === this.shopType })),
@@ -1356,13 +1362,22 @@ class ItemBrowser extends HandlebarsApplicationMixin(ApplicationV2) {
     this.merchantSheet = merchantSheet;
     this.catalog = null;
     this.selectedTypes = new Set();
-    this.selectedSources = null;
+    this.selectedSources = new Set();
     this.search = "";
     this.visibleItems = [];
     this.loadingDialog = null;
     this.loadingStartedAt = 0;
     this.filterLoading = false;
     catalogSubscribers.add(this);
+  }
+  render(options = {}) {
+    // Filtering rerenders this ApplicationV2 sheet. Keep the independent scroll
+    // panes stable so unchecking a source does not send the user back to the top.
+    if (this.element?.isConnected) {
+      this._scrollPositions = [".type-pane .filter-list", ".source-pane .filter-list", ".available-item-list"]
+        .map(selector => [selector, this.element.querySelector(selector)?.scrollTop ?? 0]);
+    }
+    return super.render(options);
   }
   static DEFAULT_OPTIONS = {
     id: "merchant-item-browser", tag: "form", classes: ["merchant-item-browser"], window: { title: "Add Items to Shop", resizable: true }, position: { width: 1050, height: 720 },
@@ -1391,13 +1406,18 @@ class ItemBrowser extends HandlebarsApplicationMixin(ApplicationV2) {
   }
   _onRender(context, options) {
     super._onRender?.(context, options);
+    for (const [selector, scrollTop] of this._scrollPositions ?? []) {
+      const pane = this.element.querySelector(selector);
+      if (pane) pane.scrollTop = scrollTop;
+    }
+    this._scrollPositions = null;
     const refresh = () => {
       this.search = this.element.querySelector("[name='itemSearch']")?.value ?? "";
       this.render();
     };
     for (const checkbox of this.element.querySelectorAll("[name='itemType']")) checkbox.addEventListener("change", () => {
       this.selectedTypes = new Set([...this.element.querySelectorAll("[name='itemType']:checked")].map(input => input.value));
-      this.selectedSources = null;
+      this.selectedSources = new Set();
       refresh();
     });
     for (const checkbox of this.element.querySelectorAll("[name='itemSource']")) checkbox.addEventListener("change", () => {
@@ -1419,7 +1439,7 @@ class ItemBrowser extends HandlebarsApplicationMixin(ApplicationV2) {
     indexedCatalog = worldItems.length ? [{ id: "world-items", label: "World Items", items: worldItems, world: true }] : [];
     this.catalog = indexedCatalog;
     if (!indexingCatalog) {
-      const packs = game.packs.filter(candidate => candidate.documentName === "Item");
+      const packs = game.packs.filter(candidate => candidate.documentName === "Item" && !/monster/i.test(candidate.title ?? ""));
       indexingCatalog = mapWithConcurrency(packs, 4, async pack => {
         try {
           const source = await withTimeout((async () => {
@@ -1451,7 +1471,6 @@ class ItemBrowser extends HandlebarsApplicationMixin(ApplicationV2) {
       for (const item of source.items) if (this.selectedTypes.has(item.category)) matchingCount++;
       if (matchingCount) matchingSources.push({ source, matchingCount });
     }
-    if (this.selectedSources === null && this.selectedTypes.size) this.selectedSources = new Set(matchingSources.map(({ source }) => source.id));
     if (this.selectedSources) {
       const sourceIds = new Set(sources.map(source => source.id));
       this.selectedSources = new Set([...this.selectedSources].filter(id => sourceIds.has(id)));
@@ -1561,7 +1580,7 @@ async function getRollTables(selectedTypes = new Set()) {
     if (!indexingRollTableCatalog) {
       indexingRollTableCatalog = (async () => {
         const tableRecords = game.tables.contents.map(table => ({ table, source: "World Tables" }));
-        const rollTablePacks = game.packs.filter(candidate => candidate.documentName === "RollTable");
+        const rollTablePacks = game.packs.filter(candidate => candidate.documentName === "RollTable" && !/monster/i.test(candidate.title ?? ""));
         const packTableRecords = await mapWithConcurrency(rollTablePacks, 4, async pack => {
           try {
             return await withTimeout((async () => {

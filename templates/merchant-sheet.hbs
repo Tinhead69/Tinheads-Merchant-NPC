@@ -44,7 +44,7 @@
           {{else}}
             <div class="merchant-item-qty">Qty {{item.quantity}}</div><div class="merchant-price">{{item.priceText}}</div>
           {{/if}}
-          <button type="button" class="purchase-button" data-action="buy" data-id="{{item.id}}">Purchase</button>
+          {{#if @root.canPurchase}}<button type="button" class="purchase-button" data-action="buy" data-id="{{item.id}}">Purchase</button>{{/if}}
         </li>
       {{else}}
         <li class="empty">No items in this shop. GMs can use <strong>Add Items</strong> to stock it.</li>
