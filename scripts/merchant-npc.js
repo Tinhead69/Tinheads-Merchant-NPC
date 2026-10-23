@@ -290,17 +290,86 @@ Hooks.once("ready", () => {
 });
 
 function copperValue(currency = {}) { return Object.entries(CURRENCY).reduce((total, [key, value]) => total + Number(currency[key] ?? 0) * value, 0); }
-function currencyFromCopper(amount) {
-  let remaining = Math.max(0, Math.round(amount)); const result = {};
-  for (const [key, value] of Object.entries(CURRENCY)) { result[key] = Math.floor(remaining / value); remaining %= value; }
+function transactionDenomination(denomination, amountCopper) {
+  const keys = Object.keys(CURRENCY);
+  let index = keys.indexOf(String(denomination ?? "gp").toLowerCase());
+  if (index < 0) throw new Error(`Unknown currency denomination: ${denomination}`);
+  while (index < keys.length - 1 && amountCopper % CURRENCY[keys[index]] !== 0) index++;
+  if (amountCopper % CURRENCY[keys[index]] !== 0) throw new Error("Transaction amount cannot be represented in the available coin denominations.");
+  return keys[index];
+}
+function addCurrencyForTransaction(currency = {}, amountCopper, denomination = "gp") {
+  const result = Object.fromEntries(Object.keys(CURRENCY).map(key => {
+    const value = Number(currency[key] ?? 0);
+    return [key, Number.isSafeInteger(value) && value > 0 ? value : 0];
+  }));
+  const start = Object.keys(CURRENCY).indexOf(String(denomination ?? "gp").toLowerCase());
+  if (start < 0) throw new Error(`Unknown currency denomination: ${denomination}`);
+  let remaining = amountCopper;
+  for (const key of Object.keys(CURRENCY).slice(start)) {
+    result[key] += Math.floor(remaining / CURRENCY[key]);
+    remaining %= CURRENCY[key];
+  }
+  if (remaining) throw new Error("Transaction amount cannot be represented in the available coin denominations.");
   return result;
+}
+function deductCurrencyForTransaction(currency = {}, amountCopper, denomination = "gp") {
+  const result = Object.fromEntries(Object.keys(CURRENCY).map(key => {
+    const value = Number(currency[key] ?? 0);
+    return [key, Number.isSafeInteger(value) && value > 0 ? value : 0];
+  }));
+  const target = transactionDenomination(denomination, amountCopper);
+  const denominations = Object.keys(CURRENCY), targetIndex = denominations.indexOf(target), targetValue = CURRENCY[target];
+  const unitsNeeded = amountCopper / targetValue;
+
+  // Spend the transaction denomination directly when possible.
+  if (result[target] >= unitsNeeded) {
+    result[target] -= unitsNeeded;
+    return result;
+  }
+
+  // If one higher denomination can cover the whole payment, make only the
+  // required change in the transaction denomination and preserve the rest.
+  const higher = denominations.slice(0, targetIndex).reverse()
+    .find(key => result[key] * CURRENCY[key] >= amountCopper);
+  if (higher) {
+    const coins = Math.ceil(amountCopper / CURRENCY[higher]);
+    result[higher] -= coins;
+    const change = coins * CURRENCY[higher] - amountCopper;
+    result[target] += change / targetValue;
+    return result;
+  }
+
+  // Otherwise use existing coins at or below the transaction denomination,
+  // then break only enough of the next higher denomination to cover any gap.
+  let remaining = amountCopper;
+  for (const key of denominations.slice(targetIndex)) {
+    const coins = Math.min(result[key], Math.floor(remaining / CURRENCY[key]));
+    result[key] -= coins;
+    remaining -= coins * CURRENCY[key];
+    if (!remaining) return result;
+  }
+  for (const key of denominations.slice(0, targetIndex).reverse()) {
+    if (!result[key]) continue;
+    const coins = Math.ceil(remaining / CURRENCY[key]);
+    if (coins > result[key]) continue;
+    result[key] -= coins;
+    let change = coins * CURRENCY[key] - remaining;
+    for (const changeKey of denominations.slice(targetIndex)) {
+      const changeCoins = Math.floor(change / CURRENCY[changeKey]);
+      result[changeKey] += changeCoins;
+      change %= CURRENCY[changeKey];
+    }
+    return result;
+  }
+  throw new Error("Insufficient funds for this transaction.");
 }
 function currencyText(currency = {}) {
   const parts = Object.keys(CURRENCY).map(key => [key, Number(currency[key] ?? 0)]).filter(([, amount]) => amount > 0).map(([key, amount]) => `${amount} ${key}`);
   return parts.join(", ") || "0 cp";
 }
 function copperText(amount) {
-  return Object.entries(currencyFromCopper(amount)).filter(([, value]) => value > 0).map(([key, value]) => `${value} ${key}`).join(", ") || "0 cp";
+  return goldText(amount);
 }
 function goldText(amount) {
   const gold = Number(amount) / CURRENCY.gp;
@@ -570,12 +639,13 @@ async function commitPurchase({ actorId, actorUuid, buyerId, stockId, quantity =
     const created = await buyer.createEmbeddedDocuments("Item", [itemData]);
     createdItemIds = created.map(item => item.id);
     stage = "deducting the character's money";
-    await buyer.update({ "system.currency": currencyFromCopper(copperValue(buyerCurrency) - cost) });
+    await buyer.update({ "system.currency": deductCurrencyForTransaction(buyerCurrency, cost, denomination) });
     buyerUpdated = true;
     stage = "updating merchant funds and shop stock";
-    entry.quantity = Number(entry.quantity) - count;
+    entry.quantity = Math.max(0, Number(entry.quantity) - count);
+    if (entry.quantity === 0) stock = stock.filter(item => item.id !== stockId);
     await merchant.update({
-      "system.currency": currencyFromCopper(copperValue(merchantCurrency) + cost),
+      "system.currency": addCurrencyForTransaction(merchantCurrency, cost, denomination),
       [`flags.${MODULE_ID}.stock`]: stock
     });
     merchantUpdated = true;
@@ -855,9 +925,9 @@ async function commitSale(sale) {
     if (itemChanges.length) await buyer.updateEmbeddedDocuments("Item", itemChanges);
     if (fullItems.length) await buyer.deleteEmbeddedDocuments("Item", fullItems.map(item => item.id));
     buyerMoneyAttempted = true;
-    await buyer.update({ "system.currency": currencyFromCopper(copperValue(buyerCurrency) + total) });
+    await buyer.update({ "system.currency": addCurrencyForTransaction(buyerCurrency, total, "gp") });
     merchantUpdateAttempted = true;
-    await merchant.update({ "system.currency": currencyFromCopper(copperValue(merchantCurrency) - total), [`flags.${MODULE_ID}.stock`]: stock });
+    await merchant.update({ "system.currency": deductCurrencyForTransaction(merchantCurrency, total, "gp"), [`flags.${MODULE_ID}.stock`]: stock });
   return { success: true, message: `The merchant paid you ${goldText(total)} for your items.` };
   } catch (error) {
     console.error(`${MODULE_ID} | Sale transaction failed.`, error);
@@ -1038,7 +1108,7 @@ class MerchantSheet extends HandlebarsApplicationMixin(ApplicationV2) {
   static DEFAULT_OPTIONS = {
     id: "merchant-npc", tag: "form", classes: ["merchant-npc"], window: { title: "Merchant Shop", resizable: true }, position: { width: 1000, height: 720 },
     form: { handler: MerchantSheet.#onSubmit, submitOnChange: false },
-    actions: { addItems: MerchantSheet.#addItems, removeItem: MerchantSheet.#removeItem, saveItem: MerchantSheet.#saveItem, buy: MerchantSheet.#buy, sellItems: MerchantSheet.#sellItems, setFloat: MerchantSheet.#setFloat, setShopType: MerchantSheet.#setShopType }
+    actions: { addItems: MerchantSheet.#addItems, clearShop: MerchantSheet.#clearShop, removeItem: MerchantSheet.#removeItem, saveItem: MerchantSheet.#saveItem, buy: MerchantSheet.#buy, sellItems: MerchantSheet.#sellItems, setFloat: MerchantSheet.#setFloat, setShopType: MerchantSheet.#setShopType }
   };
   static PARTS = { form: { template: "modules/merchant-npc/templates/merchant-sheet.hbs" } };
   _onRender(context, options) {
@@ -1165,15 +1235,46 @@ class MerchantSheet extends HandlebarsApplicationMixin(ApplicationV2) {
     await this.actor.setFlag(MODULE_ID, "stock", stock);
     this.render();
   }
+  static async #clearShop() {
+    if (!game.user.isGM) return ui.notifications.error("Only the GM can clear a merchant's shop.");
+    const stock = this.actor.getFlag(MODULE_ID, "stock") ?? [];
+    if (!stock.length) return ui.notifications.info("This shop is already empty.");
+    const actorName = foundry.utils.escapeHTML(this.actor.name);
+    const confirmed = await foundry.applications.api.DialogV2.confirm({
+      window: { title: "Clear Merchant Shop" },
+      content: `<p>Remove all ${stock.length} listed item entries from <strong>${actorName}</strong>'s shop? This cannot be undone.</p>`,
+      rejectClose: false,
+      modal: true,
+      yes: { label: "Clear Shop" },
+      no: { label: "Cancel" }
+    });
+    if (!confirmed) return;
+    await this.actor.setFlag(MODULE_ID, "stock", []);
+    this.stockSearch = "";
+    this.stockTypeFilter = "all";
+    this._restoreShopScrollTop = 0;
+    this.render();
+    ui.notifications.info(`${stock.length} item entries cleared from ${this.actor.name}'s shop.`);
+  }
   static async #saveItem(_event, target) {
     const row = target.closest("[data-stock-id]");
     const id = row?.dataset.stockId;
     const stock = foundry.utils.deepClone(this.actor.getFlag(MODULE_ID, "stock") ?? []);
     const item = stock.find(entry => entry.id === id);
     if (!item || !row) return;
-    item.quantity = Math.max(0, Number(row.querySelector("[name='quantity']")?.value ?? 0));
+    const quantity = Number(row.querySelector("[name='quantity']")?.value ?? 0);
+    if (!Number.isFinite(quantity) || quantity <= 0) {
+      const updatedStock = stock.filter(entry => entry.id !== id);
+      await this.actor.setFlag(MODULE_ID, "stock", updatedStock);
+      this._restoreShopScrollTop = this.element.querySelector(".merchant-layout")?.scrollTop ?? 0;
+      this.render();
+      ui.notifications.info(`${item.name} was removed from the shop because its quantity was set to zero.`);
+      return;
+    }
+    item.quantity = Math.floor(quantity);
     item.system.price ??= {};
-    item.system.price.value = Math.max(0, Number(row.querySelector("[name='price']")?.value ?? 0));
+    const price = Number(row.querySelector("[name='price']")?.value ?? 0);
+    item.system.price.value = Number.isFinite(price) ? Math.max(0, price) : 0;
     item.system.price.denomination ??= item.system.price.currency ?? "gp";
     await this.actor.setFlag(MODULE_ID, "stock", stock);
     this._restoreShopScrollTop = this.element.querySelector(".merchant-layout")?.scrollTop ?? 0;
@@ -1189,9 +1290,7 @@ class MerchantSheet extends HandlebarsApplicationMixin(ApplicationV2) {
     const baseGp = preset === "custom" ? custom : Number(preset);
     if (!Number.isFinite(baseGp) || baseGp < 0) return ui.notifications.warn("Choose a valid float preset or enter a non-negative custom amount in gold pieces.");
     const gp = baseGp * (this.shopType === "jeweller" ? 10 : 1);
-    let balance = Math.round(gp * CURRENCY.gp);
-    const currency = {};
-    for (const [denomination, value] of Object.entries(CURRENCY)) { currency[denomination] = Math.floor(balance / value); balance %= value; }
+    const currency = addCurrencyForTransaction({}, Math.round(gp * CURRENCY.gp), "gp");
     await this.actor.setFlag(MODULE_ID, "shopType", this.shopType);
     await this.actor.setFlag(MODULE_ID, "isShop", true);
     await this.actor.update({ "system.currency": currency });

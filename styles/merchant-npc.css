@@ -169,7 +169,8 @@
 .merchant-npc .table-generator > h3 { font-size: 1.05rem; }
 .merchant-npc .merchant-stock-area { gap: .3rem; }
 .merchant-npc .merchant-stock-area > h3 { margin: 0; }
-.merchant-npc .merchant-stock-controls { display: grid; grid-template-columns: minmax(14rem, 1fr) minmax(0, 2fr) auto; align-items: center; gap: .45rem; }
+.merchant-npc .merchant-stock-controls { display: grid; grid-template-columns: minmax(14rem, 1fr) auto minmax(0, 2fr) auto; align-items: center; gap: .45rem; }
+.merchant-npc .merchant-clear-shop { min-height: 1.9rem; white-space: nowrap; border-color: #973c08; color: #f1c7ab; }
 .merchant-npc .merchant-stock-search { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: .4rem; min-width: 0; }
 .merchant-npc .merchant-stock-search input { min-width: 0; min-height: 1.9rem; }
 .merchant-npc .merchant-stock-filters { display: flex; flex-wrap: wrap; gap: .25rem; min-width: 0; }

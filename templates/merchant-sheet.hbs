@@ -22,6 +22,7 @@
     <h3>Shop Items <span>{{stock.length}} listed</span></h3>
     <div class="merchant-stock-controls">
       <label class="merchant-stock-search">Search shop<input type="search" name="stockSearch" value="{{stockSearch}}" placeholder="Search names and descriptions"></label>
+      {{#if isGM}}<button type="button" class="merchant-clear-shop" data-action="clearShop" title="Remove every item from this shop"><i class="fas fa-trash-can" aria-hidden="true"></i> Clear Shop</button>{{/if}}
       <div class="merchant-stock-filters" role="group" aria-label="Filter shop items by type">
         <button type="button" class="merchant-stock-filter {{#if allStockTypesActive}}active{{/if}}" data-stock-type-filter="all" aria-pressed="{{allStockTypesActive}}">All <span>{{stock.length}}</span></button>
         {{#each stockTypes as |type|}}
