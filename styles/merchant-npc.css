@@ -216,6 +216,7 @@
 .merchant-npc .merchant-item-name strong { color: #f1e5d4; }
 .merchant-npc .merchant-item-name small,
 .merchant-npc .available-item-name small { color: var(--merchant-muted); }
+.merchant-npc .merchant-item-name .merchant-cart-count { color: #d99054; font-weight: 600; }
 .merchant-npc .merchant-item-qty,
 .merchant-npc .merchant-price { color: #e4d5bd; }
 .merchant-npc .stock-field { color: #d4c6bb; }

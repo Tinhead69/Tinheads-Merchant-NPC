@@ -35,16 +35,16 @@
       {{#each stock as |item|}}
         <li class="merchant-item {{#if @root.isGM}}merchant-item-gm{{/if}}" data-stock-item data-stock-id="{{item.id}}" data-stock-type="{{item.type}}" data-stock-search="{{item.searchText}}">
           <img src="{{item.img}}" alt="">
-          <div class="merchant-item-name"><strong title="{{item.description}}">{{item.name}}</strong><small>{{item.typeLabel}}</small></div>
+          <div class="merchant-item-name"><strong title="{{item.description}}">{{item.name}}</strong><small>{{item.typeLabel}}</small>{{#if item.cartLabel}}<small class="merchant-cart-count">{{item.cartLabel}}</small>{{/if}}</div>
           {{#if @root.isGM}}
             <label class="stock-field quantity-field">Qty for sale<input name="quantity" type="number" min="0" step="1" value="{{item.quantity}}"></label>
             <label class="stock-field price-field">Price{{#if item.priceMissing}}<span class="missing-price">Price missing from item</span>{{/if}}<span class="price-input"><input class="{{#if item.priceZero}}price-zero{{/if}}" name="price" type="number" min="0" step="0.01" value="{{item.system.price.value}}"><span>{{item.denomination}}</span></span></label>
             <button type="button" data-action="saveItem" title="Save price and quantity"><i class="fas fa-save"></i></button>
             <button type="button" class="icon-button" data-action="removeItem" data-id="{{item.id}}" title="Remove item"><i class="fas fa-trash"></i></button>
           {{else}}
-            <div class="merchant-item-qty">Qty {{item.quantity}}</div><div class="merchant-price">{{item.priceText}}</div>
+            <div class="merchant-item-qty">Qty {{item.availableQuantity}}</div><div class="merchant-price">{{item.priceText}}</div>
           {{/if}}
-          {{#if @root.canPurchase}}<button type="button" class="purchase-button" data-action="buy" data-id="{{item.id}}">Purchase</button>{{/if}}
+          {{#if @root.canPurchase}}<button type="button" class="purchase-button" data-action="buy" data-id="{{item.id}}" {{#if item.outOfStock}}disabled title="This item is out of stock"{{/if}}>Purchase</button>{{/if}}
         </li>
       {{else}}
         <li class="empty">No items in this shop. GMs can use <strong>Add Items</strong> to stock it.</li>

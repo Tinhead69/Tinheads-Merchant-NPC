@@ -9,8 +9,10 @@ const ITEM_CATEGORIES = [
 const pendingPurchases = new Map();
 const pendingApprovals = new Map();
 const pendingSales = new Map();
+const activeCartCounts = new Map();
 const cachedSourceItemData = new Map();
 const catalogSubscribers = new Set();
+const merchantSheetSubscribers = new Set();
 let catalogRefreshPending = false;
 // Keep the indexed catalog for this client session so reopening Add Items does
 // not repeat compendium indexing and item/description classification.
@@ -18,6 +20,45 @@ let indexedCatalog = null;
 let indexingCatalog = null;
 let indexedRollTableCatalog = null;
 let indexingRollTableCatalog = null;
+
+function cartCountKey(merchantUuid, stockId, userId) { return `${merchantUuid}|${stockId}|${userId}`; }
+function refreshMerchantSheets(merchantUuid) {
+  for (const sheet of merchantSheetSubscribers) {
+    if (sheet.actor.uuid !== merchantUuid || !sheet.element?.isConnected) continue;
+    sheet._restoreShopScrollTop = sheet.element.querySelector(".merchant-layout")?.scrollTop ?? 0;
+    sheet.render();
+  }
+}
+function applyCartCount({ merchantUuid, stockId, userId, quantity, expiresAt }) {
+  if (!merchantUuid || !stockId || !userId || !game.users.get(userId)) return;
+  const key = cartCountKey(merchantUuid, stockId, userId);
+  const count = Math.floor(Number(quantity));
+  if (count > 0 && Number(expiresAt) > Date.now()) activeCartCounts.set(key, { merchantUuid, stockId, userId, quantity: count, expiresAt: Number(expiresAt) });
+  else activeCartCounts.delete(key);
+  refreshMerchantSheets(merchantUuid);
+  if (count > 0 && Number(expiresAt) > Date.now()) {
+    window.setTimeout(() => {
+      const current = activeCartCounts.get(key);
+      if (current?.expiresAt === Number(expiresAt) && current.expiresAt <= Date.now()) {
+        activeCartCounts.delete(key);
+        refreshMerchantSheets(merchantUuid);
+      }
+    }, Math.max(0, Number(expiresAt) - Date.now() + 10));
+  }
+}
+function publishCartCount(merchantUuid, stockId, quantity) {
+  const payload = { type: "cart-count", merchantUuid, stockId, userId: game.user.id, quantity, expiresAt: Date.now() + 120000 };
+  applyCartCount(payload);
+  game.socket.emit(`module.${MODULE_ID}`, payload);
+}
+function getCartQuantity(merchantUuid, stockId) {
+  let total = 0;
+  for (const [key, cart] of activeCartCounts) {
+    if (cart.expiresAt <= Date.now()) activeCartCounts.delete(key);
+    else if (cart.merchantUuid === merchantUuid && cart.stockId === stockId) total += cart.quantity;
+  }
+  return total;
+}
 
 function priceLabel(price = {}) { return `${price.value ?? price.amount ?? 0} ${price.denomination ?? price.currency ?? "gp"}`; }
 function isItemDocument(document) { return document?.documentName === "Item"; }
@@ -114,6 +155,9 @@ Hooks.once("init", () => {
 });
 
 Hooks.once("ready", () => {
+  game.socket.on(`module.${MODULE_ID}`, payload => {
+    if (payload?.type === "cart-count" && payload.userId !== game.user.id) applyCartCount(payload);
+  });
   game.merchantNPC = { open: async (actor) => {
     if (!actor) return ui.notifications.warn("Merchant NPC could not be found.");
     try {
@@ -226,6 +270,14 @@ Hooks.once("ready", () => {
         const approve = button.dataset.merchantApproval === "approve";
         await resolvePurchaseApproval(message, approval.requestId, approve);
       }, { once: true });
+    }
+  });
+  Hooks.on("updateActor", actor => {
+    for (const sheet of merchantSheetSubscribers) {
+      if (sheet.actor.uuid === actor.uuid && sheet.element?.isConnected) {
+        sheet._restoreShopScrollTop = sheet.element.querySelector(".merchant-layout")?.scrollTop ?? 0;
+        sheet.render();
+      }
     }
   });
   Hooks.on("getActorDirectoryEntryContext", (_html, entries) => entries.push({
@@ -346,7 +398,8 @@ function deductCurrencyForTransaction(currency = {}, amountCopper, denomination 
   }
 
   // Otherwise use existing coins at or below the transaction denomination,
-  // then break only enough of the next higher denomination to cover any gap.
+  // then combine higher denominations as needed. Any overpayment is returned
+  // in the target denomination and smaller coins, preserving unrelated funds.
   let remaining = amountCopper;
   for (const key of denominations.slice(targetIndex)) {
     const coins = Math.min(result[key], Math.floor(remaining / CURRENCY[key]));
@@ -357,7 +410,11 @@ function deductCurrencyForTransaction(currency = {}, amountCopper, denomination 
   for (const key of denominations.slice(0, targetIndex).reverse()) {
     if (!result[key]) continue;
     const coins = Math.ceil(remaining / CURRENCY[key]);
-    if (coins > result[key]) continue;
+    if (coins > result[key]) {
+      remaining -= result[key] * CURRENCY[key];
+      result[key] = 0;
+      continue;
+    }
     result[key] -= coins;
     let change = coins * CURRENCY[key] - remaining;
     for (const changeKey of denominations.slice(targetIndex)) {
@@ -365,6 +422,7 @@ function deductCurrencyForTransaction(currency = {}, amountCopper, denomination 
       result[changeKey] += changeCoins;
       change %= CURRENCY[changeKey];
     }
+    if (change) throw new Error("Transaction change cannot be represented in the available coin denominations.");
     return result;
   }
   throw new Error("Insufficient funds for this transaction.");
@@ -420,7 +478,7 @@ async function requestSale(actor, merchant, items) {
     ui.notifications.error("The sale request could not be sent to the GM.");
   }
 }
-function promptPurchase({ item, buyer, stockEntry }) {
+function promptPurchase({ item, buyer, stockEntry, availableStock, onQuantityChange, onClose }) {
   return new Promise(resolve => {
     const price = stockEntry.system?.price ?? {};
     const denomination = String(price.denomination ?? "gp").toLowerCase();
@@ -429,7 +487,7 @@ function promptPurchase({ item, buyer, stockEntry }) {
     const hasPrice = rawPrice !== undefined && rawPrice !== null && rawPrice !== "";
     const unitCost = Math.round(Number(rawPrice) * coinValue);
     const availableFunds = copperValue(buyer.system.currency ?? {});
-    const availableStock = Math.max(0, Math.floor(Number(stockEntry.quantity) || 0));
+    availableStock = Math.max(0, Math.floor(Number(availableStock ?? stockEntry.quantity) || 0));
     const overlay = document.createElement("div");
     overlay.className = "merchant-purchase-overlay";
     overlay.setAttribute("role", "dialog");
@@ -470,6 +528,7 @@ function promptPurchase({ item, buyer, stockEntry }) {
     document.body.append(overlay);
     const close = result => {
       overlay.remove();
+      onClose?.();
       resolve(result);
     };
     const update = () => {
@@ -477,6 +536,7 @@ function promptPurchase({ item, buyer, stockEntry }) {
       const validPrice = hasPrice && Number.isSafeInteger(unitCost) && unitCost >= 0;
       const validQuantity = Number.isSafeInteger(count) && count > 0;
       const cost = validQuantity && validPrice ? unitCost * count : Number.POSITIVE_INFINITY;
+      onQuantityChange?.(validQuantity && count <= availableStock ? count : 0);
       total.textContent = Number.isFinite(cost) ? `Total: ${copperText(cost)}` : "Total: —";
       if (!hasPrice) status.textContent = "No price is set. Ask the DM to set a price before purchasing.";
       else if (!validPrice) status.textContent = "This item has an invalid price. Ask the DM to check it.";
@@ -488,7 +548,10 @@ function promptPurchase({ item, buyer, stockEntry }) {
     };
     quantity.addEventListener("input", update);
     cancel.addEventListener("click", () => close(null));
-    confirm.addEventListener("click", () => close({ quantity: Math.floor(Number(quantity.value)) }));
+    confirm.addEventListener("click", async () => {
+      const count = Math.floor(Number(quantity.value));
+      close({ quantity: count });
+    });
     overlay.addEventListener("click", event => { if (event.target === overlay) close(null); });
     overlay.addEventListener("keydown", event => { if (event.key === "Escape") close(null); });
     update();
@@ -501,6 +564,18 @@ function resolveMerchant(request) {
   if (request.actorUuid?.startsWith("Actor.")) return Promise.resolve(game.actors.get(request.actorId) ?? null);
   if (request.actorUuid) return fromUuid(request.actorUuid).catch(() => null);
   return Promise.resolve(game.actors.get(request.actorId) ?? null);
+}
+async function withPurchaseLock(actorId, operation) {
+  const previous = purchaseQueues.get(actorId) ?? Promise.resolve();
+  let release;
+  const current = new Promise(resolve => { release = resolve; });
+  purchaseQueues.set(actorId, current);
+  await previous;
+  try { return await operation(); }
+  finally {
+    release();
+    if (purchaseQueues.get(actorId) === current) purchaseQueues.delete(actorId);
+  }
 }
 function sendPurchaseResult(recipientId, requestId, result) {
   if (!recipientId || !game.users.get(recipientId)) return Promise.resolve();
@@ -524,7 +599,7 @@ async function resolvePurchaseApproval(message, requestId, approved) {
   if (!pending) return;
   pendingApprovals.delete(requestId);
   const result = approved
-    ? await commitPurchase(pending.request, pending.requesterId)
+    ? await withPurchaseLock(pending.request.actorId, () => commitPurchase(pending.request, pending.requesterId))
     : { success: false, message: "The GM declined this free-item purchase." };
   const status = result.success ? "approved" : approved ? "failed" : "denied";
   const safeText = foundry.utils.escapeHTML(result.message);
@@ -550,7 +625,7 @@ async function processPurchase(request, authenticatedUserId) {
     }
     const entry = (merchant.getFlag(MODULE_ID, "stock") ?? []).find(item => item.id === request.stockId);
     const quantity = Math.floor(Number(request.quantity));
-    if (!entry || !Number.isSafeInteger(quantity) || quantity < 1 || Number(entry.quantity) < quantity) return commitPurchase(request, authenticatedUserId);
+    if (!entry || !Number.isSafeInteger(quantity) || quantity < 1 || Number(entry.quantity) < quantity) return { success: false, message: "The requested quantity is no longer available." };
     const price = entry.system?.price ?? {};
     const rawPrice = price.value ?? price.amount;
     const denomination = String(price.denomination ?? "gp").toLowerCase();
@@ -644,16 +719,16 @@ async function commitPurchase({ actorId, actorUuid, buyerId, stockId, quantity =
     const created = await buyer.createEmbeddedDocuments("Item", [itemData]);
     createdItemIds = created.map(item => item.id);
     stage = "deducting the character's money";
-    await buyer.update({ "system.currency": deductCurrencyForTransaction(buyerCurrency, cost, denomination) });
     buyerUpdated = true;
+    await buyer.update({ "system.currency": deductCurrencyForTransaction(buyerCurrency, cost, denomination) });
     stage = "updating merchant funds and shop stock";
     entry.quantity = Math.max(0, Number(entry.quantity) - count);
     if (entry.quantity === 0) stock = stock.filter(item => item.id !== stockId);
+    merchantUpdated = true;
     await merchant.update({
       "system.currency": addCurrencyForTransaction(merchantCurrency, cost, denomination),
       [`flags.${MODULE_ID}.stock`]: stock
     });
-    merchantUpdated = true;
     stockUpdated = true;
     const escape = value => foundry.utils.escapeHTML(String(value ?? ""));
     const gmIds = game.users.filter(user => user.isGM).map(user => user.id);
@@ -663,7 +738,10 @@ async function commitPurchase({ actorId, actorUuid, buyerId, stockId, quantity =
   } catch (error) {
     console.error(`${MODULE_ID} | Purchase failed while ${stage}.`, error);
     try {
-      if (stockUpdated || merchantUpdated) await merchant.update({ "system.currency": merchantCurrency, [`flags.${MODULE_ID}.stock`]: originalStock });
+      if (stockUpdated || merchantUpdated) await merchant.update({
+        "system.currency": merchantCurrency,
+        [`flags.${MODULE_ID}.stock`]: originalStock
+      });
       if (buyerUpdated) await buyer.update({ "system.currency": buyerCurrency });
       if (createdItemIds.length) await buyer.deleteEmbeddedDocuments("Item", createdItemIds);
     } catch (rollbackError) { console.error(`${MODULE_ID} | Purchase rollback also failed.`, rollbackError); }
@@ -689,7 +767,7 @@ function requestPurchase(actorId, actorUuid, buyerId, stockId, quantity) {
     ChatMessage.create({
       content: "",
       whisper: [activeGM.id],
-      flags: { [MODULE_ID]: { purchaseRequest: { requestId, actorId, actorUuid, buyerId, stockId, quantity } } }
+        flags: { [MODULE_ID]: { purchaseRequest: { requestId, actorId, actorUuid, buyerId, stockId, quantity } } }
     }).catch(error => {
       pendingPurchases.delete(requestId);
       window.clearTimeout(timeoutId);
@@ -846,7 +924,7 @@ async function processSaleResponse(response, authenticatedUserId) {
     return saleResultToPlayer(sale.requesterId, response.requestId, { success: false, message: "You declined the merchant's offer." });
   }
   if (response.action === "accept") {
-    const result = await commitSale(sale);
+    const result = await withPurchaseLock(sale.merchant.id, () => commitSale(sale));
     pendingSales.delete(response.requestId);
     await saleResultToPlayer(sale.requesterId, response.requestId, result);
     if (result.success) {
@@ -1109,6 +1187,7 @@ class MerchantSheet extends HandlebarsApplicationMixin(ApplicationV2) {
     this.shopType = actor.getFlag(MODULE_ID, "shopType") ?? "general";
     this.stockSearch = "";
     this.stockTypeFilter = "all";
+    merchantSheetSubscribers.add(this);
   }
   static DEFAULT_OPTIONS = {
     id: "merchant-npc", tag: "form", classes: ["merchant-npc"], window: { title: "Merchant Shop", resizable: true }, position: { width: 1000, height: 720 },
@@ -1116,6 +1195,10 @@ class MerchantSheet extends HandlebarsApplicationMixin(ApplicationV2) {
     actions: { addItems: MerchantSheet.#addItems, clearShop: MerchantSheet.#clearShop, removeItem: MerchantSheet.#removeItem, saveItem: MerchantSheet.#saveItem, buy: MerchantSheet.#buy, sellItems: MerchantSheet.#sellItems, setFloat: MerchantSheet.#setFloat, setShopType: MerchantSheet.#setShopType }
   };
   static PARTS = { form: { template: "modules/merchant-npc/templates/merchant-sheet.hbs" } };
+  _onClose(options) {
+    merchantSheetSubscribers.delete(this);
+    return super._onClose?.(options);
+  }
   _onRender(context, options) {
     super._onRender?.(context, options);
     if (this._restoreShopScrollTop !== undefined) {
@@ -1160,8 +1243,11 @@ class MerchantSheet extends HandlebarsApplicationMixin(ApplicationV2) {
       const hasPrice = price?.value !== undefined && price?.value !== null && price?.value !== "";
       const type = String(item.type ?? "other");
       const description = tooltipText(item.system?.description?.value ?? item.system?.description ?? "");
+      const cartQuantity = getCartQuantity(this.actor.uuid, item.id);
       return {
         ...item, type, typeLabel: type.charAt(0).toUpperCase() + type.slice(1), description,
+        cartQuantity, cartLabel: cartQuantity ? `${cartQuantity} in cart${cartQuantity === 1 ? "" : "s"}` : "",
+        availableQuantity: Math.max(0, Number(item.quantity)), outOfStock: Number(item.quantity) <= 0,
         searchText: `${item.name ?? ""} ${type} ${description}`.toLocaleLowerCase(),
         hasPrice, priceMissing: !hasPrice, priceZero: !hasPrice || Number(price.value) === 0,
         priceText: hasPrice ? priceLabel(price) : "Price not set", denomination: price?.denomination ?? "gp"
@@ -1314,10 +1400,16 @@ class MerchantSheet extends HandlebarsApplicationMixin(ApplicationV2) {
     if (!buyer) return ui.notifications.warn("Assign your user a character in User Configuration before purchasing.");
     const stockEntry = (this.actor.getFlag(MODULE_ID, "stock") ?? []).find(item => item.id === target.dataset.id);
     if (!stockEntry || Number(stockEntry.quantity) < 1) return ui.notifications.warn("That item is out of stock.");
-    const purchase = await promptPurchase({ item: stockEntry, buyer, stockEntry });
+    const availableStock = Math.max(0, Math.floor(Number(stockEntry.quantity) || 0));
+    const purchase = await promptPurchase({
+      item: stockEntry, buyer, stockEntry, availableStock,
+      onQuantityChange: quantity => publishCartCount(this.actor.uuid, stockEntry.id, quantity),
+      onClose: () => publishCartCount(this.actor.uuid, stockEntry.id, 0)
+    });
     if (!purchase) return;
+    const request = { requestId: foundry.utils.randomID(), actorId: this.actor.id, actorUuid: this.actor.uuid, buyerId: buyer.id, stockId: target.dataset.id, quantity: purchase.quantity };
     const result = game.user.isGM
-      ? await processPurchase({ requestId: foundry.utils.randomID(), actorId: this.actor.id, actorUuid: this.actor.uuid, buyerId: buyer.id, stockId: target.dataset.id, quantity: purchase.quantity }, game.user.id)
+      ? await processPurchase(request, game.user.id)
       : await requestPurchase(this.actor.id, this.actor.uuid, buyer.id, target.dataset.id, purchase.quantity);
     if (!result?.success) return ui.notifications.warn(result?.message ?? "The purchase could not be completed.");
     ui.notifications.info(result.message ?? "Purchase completed.");
