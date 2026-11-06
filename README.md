@@ -49,6 +49,13 @@ Use the shop's search and type filters to find stock. Hover over an item name to
 Items that have no price are highlighted for the GMS attention. 
 
 To change the price and quantity, change the values and then click the save icon to store the new data.
+Clicking the same item multiple times will add additional units of the same item to the shop stock.
+
+There is also the function to add random items from the selected items  The most that can be added at any one time is 40 to ensure the stock loading does not take too long.
+
+Once you have completed stocking the store, you can click the **Done** button in the bottom right hand corner of the window.  You are returned to the main shop interface with a list of items stocked.
+
+![Items_in_stock](Screenshots/stock.png)
 
 ### Buying Items
 
