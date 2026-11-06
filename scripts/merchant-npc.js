@@ -108,7 +108,7 @@ function withTimeout(promise, milliseconds, label) {
 }
 function getConfiguredShopActor(token) {
   const tokenActor = token?.actor;
-  if (isConfiguredShop(tokenActor)) return tokenActor;
+  if (tokenActor?.getFlag(MODULE_ID, "isShop") !== undefined) return tokenActor;
   const baseActor = token?.document?.actorId ? game.actors.get(token.document.actorId) : null;
   return isConfiguredShop(baseActor) ? baseActor : tokenActor;
 }
@@ -167,21 +167,13 @@ function canShopAs(actor, user) {
   return actor?.type === "character" && actor.testUserPermission(user, CONST.DOCUMENT_OWNERSHIP_LEVELS.OWNER);
 }
 
-async function chooseShopper(user) {
-  const characters = game.actors.filter(actor => canShopAs(actor, user));
-  if (characters.length < 2) return characters[0];
-  const escape = foundry.utils.escapeHTML;
-  const options = characters.sort((a, b) => a.name.localeCompare(b.name)).map(actor =>
-    `<option value="${escape(actor.id)}"${actor.id === user.character?.id ? " selected" : ""}>${escape(actor.name)}</option>`
-  ).join("");
-  const id = await foundry.applications.api.DialogV2.prompt({
-    window: { title: "Choose a Shopping Character" },
-    content: `<label>Who is shopping? <select name="shopper" autofocus>${options}</select></label>`,
-    rejectClose: false,
-    modal: true,
-    ok: { label: "Open Shop", callback: (_event, button) => button.form.elements.shopper.value }
-  });
-  return characters.find(actor => actor.id === id) ?? null;
+function getSelectedShoppers() {
+  const characters = new Set();
+  for (const token of canvas.tokens?.controlled ?? []) {
+    const actor = token.document.baseActor;
+    if (canShopAs(actor, game.user)) characters.add(actor);
+  }
+  return [...characters];
 }
 
 Hooks.once("ready", () => {
@@ -189,14 +181,22 @@ Hooks.once("ready", () => {
     if (payload?.type === "cart-count" && payload.userId !== game.user.id) applyCartCount(payload);
   });
   const openingShops = new Set();
-  game.merchantNPC = { open: async (actor) => {
-    if (!actor) return ui.notifications.warn("Merchant NPC could not be found.");
+  const openShop = async (actor) => {
+    if (actor?.type !== "npc") return ui.notifications.warn("Merchant NPC could not be found.");
     if (openingShops.has(actor.uuid)) return null;
+    let shopper;
+    if (!game.user.isGM) {
+      const shoppers = getSelectedShoppers();
+      if (shoppers.length !== 1) {
+        ui.notifications.warn("Select the token for one character you own before opening the shop.");
+        return null;
+      }
+      [shopper] = shoppers;
+    }
     openingShops.add(actor.uuid);
     try {
       if (game.user.isGM) await actor.setFlag(MODULE_ID, "isShop", true);
-      const shopper = game.user.isGM ? undefined : await chooseShopper(game.user);
-      if (shopper === null) return null;
+      if (!isConfiguredShop(actor)) return null;
       const sheet = [...merchantSheetSubscribers].find(open => open.actor.uuid === actor.uuid && open.rendered)
         ?? new MerchantSheet(actor);
       sheet.shopperId = shopper?.id;
@@ -209,37 +209,58 @@ Hooks.once("ready", () => {
     } finally {
       openingShops.delete(actor.uuid);
     }
-  } };
-  // In v13 the normal canvas double-click is handled by TokenLayer, not Token.
-  // Resolve the placeable from the PIXI event target's parent chain and intercept
-  // only configured shops the player cannot open as character sheets.
-  const installTokenDoubleClick = () => {
-    const tokenLayerPrototype = canvas.tokens?.constructor?.prototype;
+  };
+  game.merchantNPC = { open: actor => game.user.isGM ? openShop(actor) : null };
+  const installTokenShopControls = () => {
+    const tokenLayer = canvas.tokens?.constructor;
+    const tokenLayerPrototype = tokenLayer?.prototype;
     if (!tokenLayerPrototype?._onClickLeft2 || tokenLayerPrototype._merchantNPCWrapped) return;
-    const originalDoubleClick = tokenLayerPrototype._onClickLeft2;
+    const isShopToken = token => token?.isVisible && !token.document.hidden && isConfiguredShop(getConfiguredShopActor(token));
+    const openTokenShop = (token, event) => {
+      if (game.user.isGM || !isShopToken(token)) return false;
+      event?.stopPropagation?.();
+      void openShop(getConfiguredShopActor(token));
+      return true;
+    };
+    const keepShopperSelected = (token, event) => !game.user.isGM
+      && !event?.shiftKey && !event?.ctrlKey && !event?.altKey && !event?.metaKey
+      && isShopToken(token) && getSelectedShoppers().length > 0;
+    const tokenPrototype = tokenLayer.placeableClass?.prototype;
+    const tokenClick = tokenPrototype?._onClickLeft;
+    if (tokenClick) tokenPrototype._onClickLeft = function(event, ...args) {
+      if (!keepShopperSelected(this, event)) return tokenClick.call(this, event, ...args);
+      event?.stopPropagation?.();
+    };
+    const tokenDoubleClick = tokenPrototype?._onClickLeft2;
+    if (tokenDoubleClick) tokenPrototype._onClickLeft2 = function(event, ...args) {
+      if (!openTokenShop(this, event)) return tokenDoubleClick.call(this, event, ...args);
+    };
+    // A token the player cannot control can leave the click to the canvas layer.
+    const getClickedToken = (layer, event) => {
+      for (let target = event?.target; target; target = target.parent) {
+        if (target.document?.documentName === "Token") return target;
+      }
+      if (!event?.getLocalPosition) return null;
+      return [...layer.placeables].reverse().find(token => {
+        if (!token.isVisible || token.document.hidden) return false;
+        const { x, y } = event.getLocalPosition(token);
+        return token.getShape().contains(x, y);
+      });
+    };
+    const layerClick = tokenLayerPrototype._onClickLeft;
+    if (layerClick) tokenLayerPrototype._onClickLeft = function(event, ...args) {
+      if (game.user.isGM || !keepShopperSelected(getClickedToken(this, event), event)) return layerClick.call(this, event, ...args);
+      event?.stopPropagation?.();
+    };
+    const layerDoubleClick = tokenLayerPrototype._onClickLeft2;
     tokenLayerPrototype._onClickLeft2 = function(event, ...args) {
-      let target = event?.target ?? event?.currentTarget;
-      let token = null;
-      while (target) {
-        if (target.document?.documentName === "Token" || target.document?.actorId) {
-          token = target;
-          break;
-        }
-        target = target.parent;
-      }
-      const actor = getConfiguredShopActor(token);
-      if (!game.user.isGM && actor?.type === "npc") {
-        event?.stopPropagation?.();
-        if (isConfiguredShop(actor)) void game.merchantNPC.open(actor);
-        return;
-      }
-      return originalDoubleClick.call(this, event, ...args);
+      if (game.user.isGM || !openTokenShop(getClickedToken(this, event), event)) return layerDoubleClick.call(this, event, ...args);
     };
     tokenLayerPrototype._merchantNPCWrapped = true;
-    console.info(`${MODULE_ID} | TokenLayer shop double-click handler installed.`);
+    console.info(`${MODULE_ID} | Token shop controls installed.`);
   };
-  Hooks.on("canvasReady", installTokenDoubleClick);
-  installTokenDoubleClick();
+  Hooks.on("canvasReady", installTokenShopControls);
+  installTokenShopControls();
   Hooks.on("createChatMessage", async (message, _options, userId) => {
     const saleRequest = message.getFlag(MODULE_ID, "saleRequest");
     if (saleRequest && game.user.isGM && game.users.activeGM?.id === game.user.id) {
@@ -318,7 +339,9 @@ Hooks.once("ready", () => {
   });
   Hooks.on("updateActor", actor => {
     for (const sheet of merchantSheetSubscribers) {
-      if (sheet.actor.uuid === actor.uuid && sheet.element?.isConnected) {
+      if (sheet.actor.id !== actor.id || !sheet.element?.isConnected) continue;
+      if (!isConfiguredShop(sheet.actor)) void sheet.close();
+      else if (sheet.actor.uuid === actor.uuid) {
         sheet._restoreShopScrollTop = sheet.element.querySelector(".merchant-layout")?.scrollTop ?? 0;
         sheet.render();
       }
@@ -326,7 +349,7 @@ Hooks.once("ready", () => {
   });
   Hooks.on("getActorDirectoryEntryContext", (_html, entries) => entries.push({
     name: "Open Merchant Shop", icon: '<i class="fas fa-store"></i>',
-    condition: (li) => isConfiguredShop(game.actors.get(li.data("documentId"))),
+    condition: (li) => game.user.isGM && isConfiguredShop(game.actors.get(li.data("documentId"))),
     callback: (li) => game.merchantNPC.open(game.actors.get(li.data("documentId")))
   }));
   Hooks.on("getActorDirectoryEntryContext", (_html, entries) => entries.push({
@@ -334,42 +357,10 @@ Hooks.once("ready", () => {
     condition: (li) => game.user.isGM && game.actors.get(li.data("documentId"))?.type === "npc" && !isConfiguredShop(game.actors.get(li.data("documentId"))),
     callback: (li) => game.merchantNPC.open(game.actors.get(li.data("documentId")))
   }));
-  // Directory double-click works even when Foundry blocks opening the actor sheet for a player.
-  Hooks.on("renderActorDirectory", (app, html) => {
-    const root = html instanceof HTMLElement ? html : html?.[0];
-    if (!root || root.dataset.merchantDoubleClickBound) return;
-    root.dataset.merchantDoubleClickBound = "true";
-    root.addEventListener("dblclick", event => {
-      const row = event.target.closest(".directory-item[data-document-id]");
-      const actor = row && game.actors.get(row.dataset.documentId);
-      if (game.user.isGM || actor?.type !== "npc") return;
-      event.preventDefault();
-      event.stopImmediatePropagation();
-      if (isConfiguredShop(actor)) game.merchantNPC.open(actor);
-    }, true);
-  });
-  // Token HUD gives players without actor-sheet permission a reliable canvas entry point.
-  Hooks.on("renderTokenHUD", (hud, html) => {
-    const actor = getConfiguredShopActor(hud.object ?? hud.document);
-    const root = html instanceof HTMLElement ? html : html?.[0];
-    if (!root || !isConfiguredShop(actor) || game.user.isGM || root.querySelector(".merchant-token-shop")) return;
-    const button = document.createElement("div");
-    button.className = "control-icon merchant-token-shop";
-    button.dataset.tooltip = "Open Merchant Shop";
-    button.innerHTML = '<i class="fas fa-store"></i>';
-    button.addEventListener("click", event => { event.preventDefault(); event.stopPropagation(); game.merchantNPC.open(actor); });
-    (root.querySelector(".col.right") ?? root.querySelector(".col.left") ?? root).append(button);
-  });
   const addMerchantButton = (app, html) => {
     const actor = app.actor ?? app.document;
-    if (actor?.type !== "npc") return;
+    if (!game.user.isGM || actor?.type !== "npc") return;
     const configuredShop = isConfiguredShop(actor);
-    if (!game.user.isGM) {
-      Promise.resolve(app.close()).then(() => {
-        if (configuredShop) game.merchantNPC.open(actor);
-      });
-      return;
-    }
     if (!configuredShop && isMonsterActor(actor)) return;
     const root = html instanceof HTMLElement ? html : html?.[0];
     const header = root?.querySelector(".window-header");
@@ -972,6 +963,10 @@ async function processSaleResponse(response, authenticatedUserId) {
     return;
   }
   if (response.action !== "persuade" || sale.persuasionUsed) return;
+  if (!isConfiguredShop(sale.merchant)) {
+    pendingSales.delete(response.requestId);
+    return saleResultToPlayer(sale.requesterId, response.requestId, { success: false, message: "This merchant is no longer set up as a shop." });
+  }
   if (!sale.requester.isGM && !canShopAs(game.actors.get(sale.buyer.id), sale.requester)) {
     pendingSales.delete(response.requestId);
     return saleResultToPlayer(sale.requesterId, response.requestId, { success: false, message: "You no longer control the character offering these items." });
@@ -1287,7 +1282,7 @@ class MerchantSheet extends HandlebarsApplicationMixin(ApplicationV2) {
   get title() { return `${this.actor.name} — ${SHOP_TYPES[this.shopType] ?? SHOP_TYPES.general}`; }
   get shopper() {
     const actor = game.actors.get(this.shopperId);
-    return canShopAs(actor, game.user) ? actor : null;
+    return isConfiguredShop(this.actor) && canShopAs(actor, game.user) ? actor : null;
   }
   async _prepareContext() {
     const shopper = this.shopper;
