@@ -18,6 +18,33 @@
   </section>
   {{/if}}
 
+  {{#if canPurchase}}
+  <section class="merchant-panel merchant-basket" aria-label="Basket">
+    <div class="merchant-panel-heading"><h3>Basket</h3><span>Your funds {{shopperFunds}}</span></div>
+    {{#if basketLines.length}}
+    <ul class="merchant-basket-lines">
+      {{#each basketLines as |line|}}
+      <li>
+        <strong>{{line.name}}</strong>
+        <span>Qty {{line.quantity}}</span>
+        <span>{{line.costText}}</span>
+        <button type="button" data-action="changeBasket" data-id="{{line.stockId}}" data-change="-1" aria-label="Remove one {{line.name}}" {{#if @root.checkoutPending}}disabled{{/if}}>−</button>
+        <button type="button" data-action="changeBasket" data-id="{{line.stockId}}" data-change="1" aria-label="Add one {{line.name}}" {{#unless line.canAdd}}disabled{{/unless}}>+</button>
+        <button type="button" data-action="changeBasket" data-id="{{line.stockId}}" data-change="remove" aria-label="Remove {{line.name}} from basket" {{#if @root.checkoutPending}}disabled{{/if}}>Remove</button>
+      </li>
+      {{/each}}
+    </ul>
+    <div class="merchant-basket-checkout">
+      <strong>{{#if basketTotal}}Total {{basketTotal}}{{/if}}</strong>
+      <button type="button" data-action="checkout" data-total="{{basketTotalCopper}}" {{#unless canCheckout}}disabled{{/unless}}>{{#if checkoutPending}}Purchasing…{{else}}Purchase Basket{{/if}}</button>
+    </div>
+    {{#if basketError}}<p class="hint" role="status">{{basketError}}</p>{{/if}}
+    {{else}}
+    <p class="hint">Add items from the shop to start your basket.</p>
+    {{/if}}
+  </section>
+  {{/if}}
+
   <section class="merchant-stock-area">
     <h3>Shop Items <span>{{stock.length}} listed</span></h3>
     <div class="merchant-stock-controls">
@@ -44,7 +71,7 @@
           {{else}}
             <div class="merchant-item-qty">Qty {{item.availableQuantity}}</div><div class="merchant-price">{{item.priceText}}</div>
           {{/if}}
-          {{#if @root.canPurchase}}<button type="button" class="purchase-button" data-action="buy" data-id="{{item.id}}" {{#if item.outOfStock}}disabled title="This item is out of stock"{{/if}}>Purchase</button>{{/if}}
+          {{#if @root.canPurchase}}<button type="button" class="purchase-button" data-action="changeBasket" data-id="{{item.id}}" data-change="1" aria-label="Add {{item.name}} to basket" {{#unless item.canAdd}}disabled{{/unless}}>{{#if item.awaitingApproval}}Awaiting GM{{else}}Add to Basket{{/if}}</button>{{/if}}
         </li>
       {{else}}
         <li class="empty">No items in this shop. GMs can use <strong>Add Items</strong> to stock it.</li>
