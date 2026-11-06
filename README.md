@@ -1,55 +1,56 @@
-# Merchant NPC
+# Tinhead's Merchant NPC
 
-An installable Foundry VTT module for Foundry 13.351 and D&D 5e 5.0.0.
+Add-on module for Foundry VTT and D&D 5e
 
-## GitHub distribution
+Turn an NPC into a shop your players can visit on the map. Stock the shelves from compendiums or rollable tables, then let players buy gear, sell loot, and haggle over the price.
 
-Repository: [Tinhead69/Tinheads-Merchant-NPC](https://github.com/Tinhead69/Tinheads-Merchant-NPC)  
-Foundry manifest URL: `https://raw.githubusercontent.com/Tinhead69/Tinheads-Merchant-NPC/main/module.json`  
-Module download URL: `https://github.com/Tinhead69/Tinheads-Merchant-NPC/archive/refs/heads/main.zip`
+## Installation
 
-Player purchase requests are sent as private chat messages to the active GM. The GM validates the authenticated user ID supplied by Foundry's document creation hook before processing the request; client-provided user IDs are not trusted.
+1. In Foundry Setup, open **Add-on Modules** and click **Install Module**.
+2. Paste the URL below into **Manifest URL** and click **Install**.
+3. Open your D&D 5e world and enable **Tinhead's Merchant NPC** under **Game Settings → Manage Modules**.
 
-In Foundry's **Install Module** screen, paste the manifest URL. The manifest download URL points to the repository main branch archive. Update the module version before distributing subsequent changes. Roll-table stock generation keeps valid linked Item results if a table has fewer available draws than requested, and skips text or non-matching results with a notification.
+```text
+https://raw.githubusercontent.com/Tinhead69/Tinheads-Merchant-NPC/main/module.json
+```
 
-## Install
+For manual installation, extract the archive, rename the extracted folder to `merchant-npc`, and place it so the manifest is at `Data/modules/merchant-npc/module.json`. [Download the module ZIP](https://github.com/Tinhead69/Tinheads-Merchant-NPC/archive/refs/heads/main.zip)
 
-Copy the `merchant-npc` folder into your Foundry `Data/modules` directory, then enable **Merchant NPC** in the world's Manage Modules window. When packaging, keep the `merchant-npc` folder at the archive root, matching the GitHub source archive layout.
+The manifest lists Foundry v14 as verified and requires Foundry v13 or later and the D&D 5e game system version 5.0.0 or later. [Foundry's module installation guide](https://foundryvtt.com/article/modules/#installing-new-modules)
 
-## Use
+## Usage & Current Features
 
-- To open a shop as a player, select a token for one character you own, then double-click the visible merchant NPC token on the canvas. The NPC needs an active shop and can have its player ownership set to **None**. GMs can open or set up a shop from the Actors directory or NPC sheet without selecting a token.
-- GMs can set the shop type on the merchant sheet. Jewellers receive ten-times-higher float presets.
-- GMs can use the three-pane **Add Items** browser to dynamically filter by item type and source, add individual items, randomly add items from selected sources, or roll world and compendium Rollable Tables with linked items in the selected categories. Item descriptions appear on hover in both the browser and shop inventory. Item compendiums with fewer than five supported items are hidden. Item compendiums appear as each index finishes loading; a source that takes over five seconds or fails to load is skipped. Item compendium and roll-table catalogs are cached for the current Foundry session. Compendium indexing and linked table-result lookups use bounded concurrency, and adding batches of random or table stock uses one update.
-- Add Items starts with all category checkboxes off. Its categories are Potions, Weapons, Armour, Magic Items, and Normal Equipment; spells are excluded, and magical equipment is listed as Magic Items only when marked magical. Magical weapons and armour stay in their physical category.
-- The merchant sheet shows the full shop inventory with live search across item names and descriptions and item-type filters. GMs can edit stock quantities and prices, remove items, and set a starting purse. Repeated additions and repeated Rollable Table results are allowed and increase the stock quantity. Item prices and denominations are copied from the source item, and the GM is alerted when a listed item has no price.
-- GMs can set the merchant's purse to a custom amount in gp, or use Poor (200 gp), Average (500 gp), and Rich (1,000 gp) starting-float presets. Jewellers use ten times those preset values.
-- Set each item's price in its D&D 5e item data before listing it. Stock quantity is tracked by the shop; buyers can select a quantity up to the available stock.
-- The shop opens directly for the selected character. Purchases and sales use the world character represented by the selected token. To switch shoppers, select a different character token and reopen the shop.
-- Players click **Purchase**, choose a quantity, and see the selected character’s purse and the total before confirming. Purchases are validated and completed automatically using the exact value of all `system.currency` denominations; currency is deducted, the purchased quantity is added to the character, merchant funds are credited, and stock is reduced. Positive-priced purchases complete automatically when the buyer has enough funds. An item priced at exactly 0 requires GM approval; choose **GM chat card** or **GM pop-up dialog** under **Game Settings → Configure Settings → Merchant NPC**. The active GM client handles the permission-secured transaction in the background. Source item data is cached in the GM client rather than copied into each stock entry, keeping transaction updates smaller. After a completed purchase, GMs receive a private chat card with the buyer, item, quantity, merchant, and total. Items with no price set cannot be purchased.
-- Players can click **Sell Items** and drag inventory items into the sale window, choose quantities, and send the proposed list to the active GM. The GM sees each item's quantity and listed value, can decline individual items, and set a per-item offer. The seller can accept, decline, or roll Persuasion against the merchant's Insight using Foundry's built-in D&D 5e skill roll. A successful Persuasion check lets the GM revise the offer; otherwise the existing offer stands. Items and currency transfer only after the seller accepts, and sold items are added to merchant stock.
-- Merchant stock is saved in the NPC actor's `merchant-npc.stock` flag; merchant funds use the NPC's normal D&D 5e currency fields.
+### Opening a Shop
 
-## Notes
+As the GM, open up the NPCs character sheet and click the shop icon on the top bar; this will open up the shop interface
 
-This initial version handles the standard D&D 5e coin denominations (pp, gp, ep, sp, cp), converts currency to the exact copper value for affordability, and re-denominates the remaining balance. It assumes item prices use the standard denomination values and the `system.price.value` plus `system.price.denomination` data fields. It does not apply discounts, taxes, or quantity multipliers.
+![Shop Icon location](screenshots/shop icon location.png)
+
+This icon is available to all NPCs, however it does not create a shop until this icon is clicked.
+
+### Setting Up a Merchant
 
 
+Choose **Standard Merchant** or **Jeweller**, then set the starting funds. Standard presets are **Poor** (200 gp), **Average** (500 gp), and **Rich** (1,000 gp). Jewellers multiply the starting amount by ten. Use **Custom amount (gp)** to enter your own amount.
 
+### Stocking the Shop
 
+Click **Add Items** to browse world items and compendiums. Choose item types and sources, then add individual items or use **Add Random Items** to fill the shop from your selection. You can also choose a world or compendium rollable table and click **Roll & Add** to stock any eligible Item results. Repeated items increase the quantity on the shelf.
 
+Use the shop's search and type filters to find stock. Hover over an item name to see its description. GMs can adjust quantities and prices, remove individual listings, or clear the shop.
 
+### Buying Items
 
+Click **Purchase**, choose a quantity, and review the total and your character's purse before confirming. With an active GM connected, the module transfers the items and currency, updates the stock, and sends the GM a private receipt.
 
+Items need a price before they can be purchased. Items priced at **0** require GM approval. Choose **GM chat card** or **GM pop-up dialog** under **Game Settings → Configure Settings → Merchant NPC**.
 
+### Selling Items and Haggling
 
+Click **Sell Items**, drag items from your character sheet into the sale window, and choose the quantities to offer. Click **Confirm Items** to send the list to the active GM, who can choose which items to buy and set a price for each.
 
+When the offer comes back, accept it, decline it, or try **Persuasion** against the merchant's **Insight**. A successful roll gives the GM a chance to revise the offer. Once you accept, the merchant pays your character and adds the items to shop stock.
 
+## Bug Reporting
 
-
-
-
-
-
-
-
+Include your Foundry, D&D 5e, and Merchant NPC versions, along with the steps to reproduce the issue. For shop access issues, mention which token you selected and how you opened the merchant. [Report an issue on GitHub](https://github.com/Tinhead69/Tinheads-Merchant-NPC/issues)
