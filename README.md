@@ -39,12 +39,20 @@ Standard presets are **Poor** (200 gp), **Average** (500 gp), and **Rich** (1,00
 
 ### Stocking the Shop
 
-Click **Add Items** to browse world items and compendiums. Choose item types and sources, then add individual items or use **Add Random Items** to fill the shop from your selection. You can also choose a world or compendium rollable table and click **Roll & Add** to stock any eligible Item results. Repeated items increase the quantity on the shelf.
+Clicking **Add Items** allows you to pull up the stocking interface.  Here you can sort items by type (to create bespoke shops if required) and select which compendiums the items need to be selected from.  There is also a function to add items from a predetermined roll table. 
+
+When you have decided what sort of items the merchant should stock, clicking on the different installed compendiums filters the main window with the types of items available in those compendiums.  Prices are taken from the compendiums if previously inputted.
+
+![Stock_interface](Screenshots/stock-window.png)
 
 Use the shop's search and type filters to find stock. Hover over an item name to see its description. GMs can adjust quantities and prices, remove individual listings, or clear the shop.
+Items that have no price are highlighted for the GMS attention. 
+
+To change the price and quantity, change the values and then click the save icon to store the new data.
 
 ### Buying Items
 
+Characters can interact with the shop once it has been set By double clicking on the NPC their shop interace opens.
 Click **Purchase**, choose a quantity, and review the total and your character's purse before confirming. With an active GM connected, the module transfers the items and currency, updates the stock, and sends the GM a private receipt.
 
 Items need a price before they can be purchased. Items priced at **0** require GM approval. Choose **GM chat card** or **GM pop-up dialog** under **Game Settings → Configure Settings → Merchant NPC**.
