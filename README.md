@@ -32,7 +32,7 @@ This icon is available to all NPCs, however it does not create a shop until this
 
 Once opened you are presented with the shop set up interface where you can decide on which type of merchant the NPC is. There are currently two options:  Standard Merchant and Jeweller.  
 
-![shop_interface[(Screenshots/shop-interface.png).
+![Shop Interface](Screenshots/shop-interface.png)
 
 You can then decide what sort of monetary float the Merchant has.  This can be selected by either drop down menu or inputting a custom amount.
 Standard presets are **Poor** (200 gp), **Average** (500 gp), and **Rich** (1,000 gp). Jewellers multiply the starting amount by ten. Use **Custom amount (gp)** to enter your own amount.
