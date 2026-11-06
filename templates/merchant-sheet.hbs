@@ -1,8 +1,8 @@
 <section class="merchant-layout">
   <header class="merchant-heading">
     <img src="{{actor.img}}" alt="">
-    <div><h2>{{actor.name}}</h2><p>{{funds}}</p></div>
-    {{#unless isGM}}<button type="button" class="merchant-sell-open" data-action="sellItems"><i class="fas fa-coins"></i> Sell Items</button>{{/unless}}
+    <div><h2>{{actor.name}}</h2><p>{{funds}}</p>{{#if shopperName}}<p>Shopping as {{shopperName}}</p>{{/if}}</div>
+    {{#if canPurchase}}<button type="button" class="merchant-sell-open" data-action="sellItems"><i class="fas fa-coins"></i> Sell Items</button>{{/if}}
   </header>
 
   {{#if isGM}}

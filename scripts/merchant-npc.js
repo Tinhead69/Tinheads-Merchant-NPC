@@ -154,6 +154,27 @@ Hooks.once("init", () => {
   });
 });
 
+function canShopAs(actor, user) {
+  return actor?.type === "character" && actor.testUserPermission(user, CONST.DOCUMENT_OWNERSHIP_LEVELS.OWNER);
+}
+
+async function chooseShopper(user) {
+  const characters = game.actors.filter(actor => canShopAs(actor, user));
+  if (characters.length < 2) return characters[0];
+  const escape = foundry.utils.escapeHTML;
+  const options = characters.sort((a, b) => a.name.localeCompare(b.name)).map(actor =>
+    `<option value="${escape(actor.id)}"${actor.id === user.character?.id ? " selected" : ""}>${escape(actor.name)}</option>`
+  ).join("");
+  const id = await foundry.applications.api.DialogV2.prompt({
+    window: { title: "Choose a Shopping Character" },
+    content: `<label>Who is shopping? <select name="shopper" autofocus>${options}</select></label>`,
+    rejectClose: false,
+    modal: true,
+    ok: { label: "Open Shop", callback: (_event, button) => button.form.elements.shopper.value }
+  });
+  return characters.find(actor => actor.id === id) ?? null;
+}
+
 Hooks.once("ready", () => {
   game.socket.on(`module.${MODULE_ID}`, payload => {
     if (payload?.type === "cart-count" && payload.userId !== game.user.id) applyCartCount(payload);
@@ -162,7 +183,11 @@ Hooks.once("ready", () => {
     if (!actor) return ui.notifications.warn("Merchant NPC could not be found.");
     try {
       if (game.user.isGM) await actor.setFlag(MODULE_ID, "isShop", true);
-      const sheet = new MerchantSheet(actor);
+      const shopper = game.user.isGM ? undefined : await chooseShopper(game.user);
+      if (shopper === null) return null;
+      const sheet = [...merchantSheetSubscribers].find(open => open.actor.uuid === actor.uuid && open.rendered)
+        ?? new MerchantSheet(actor);
+      sheet.shopperId = shopper?.id;
       await sheet.render(true);
       return sheet;
     } catch (error) {
@@ -586,9 +611,9 @@ function sendPurchaseResult(recipientId, requestId, result) {
     flags: { [MODULE_ID]: { purchaseResult: { requestId, recipientId, result } } }
   }).catch(error => console.error(`${MODULE_ID} | Could not send purchase result.`, error));
 }
-function purchaseApprovalCard({ requestId, requester, merchant, entry, quantity }) {
+function purchaseApprovalCard({ requestId, requester, buyer, merchant, entry, quantity }) {
   const escape = value => foundry.utils.escapeHTML(String(value ?? ""));
-  return `<div class="merchant-approval-card" data-request-id="${escape(requestId)}"><h3>Free Purchase Approval</h3><p><strong>${escape(requester.name)}</strong> requests ${quantity} × <strong>${escape(entry.name)}</strong> from ${escape(merchant.name)}.</p><p>This item has a total price of 0.</p><button type="button" data-merchant-approval="approve">Approve</button> <button type="button" data-merchant-approval="deny">Deny</button></div>`;
+  return `<div class="merchant-approval-card" data-request-id="${escape(requestId)}"><h3>Free Purchase Approval</h3><p><strong>${escape(buyer.name)}</strong> (${escape(requester.name)}) requests ${quantity} × <strong>${escape(entry.name)}</strong> from ${escape(merchant.name)}.</p><p>This item has a total price of 0.</p><button type="button" data-merchant-approval="approve">Approve</button> <button type="button" data-merchant-approval="deny">Deny</button></div>`;
 }
 async function resolvePurchaseApproval(message, requestId, approved) {
   if (!game.user.isGM || game.users.activeGM?.id !== game.user.id) return;
@@ -620,7 +645,7 @@ async function processPurchase(request, authenticatedUserId) {
     const buyer = game.actors.get(request.buyerId);
     const merchant = await resolveMerchant(request);
     if (!requester || !buyer || !merchant || !isConfiguredShop(merchant)) return { success: false, message: "That merchant or buyer is no longer available." };
-    if (!requester.isGM && (requester.character?.id !== buyer.id || !buyer.testUserPermission(requester, CONST.DOCUMENT_OWNERSHIP_LEVELS.OWNER))) {
+    if (!requester.isGM && !canShopAs(buyer, requester)) {
       return { success: false, message: "You do not own the selected buyer character." };
     }
     const entry = (merchant.getFlag(MODULE_ID, "stock") ?? []).find(item => item.id === request.stockId);
@@ -635,7 +660,7 @@ async function processPurchase(request, authenticatedUserId) {
       if (mode === "dialog") {
         const approved = await foundry.applications.api.DialogV2.confirm({
           window: { title: "Approve Free Purchase" },
-          content: purchaseApprovalCard({ requestId: request.requestId, requester, merchant, entry, quantity }).replace(/<button[^>]*>[\s\S]*?<\/button>/g, ""),
+          content: purchaseApprovalCard({ requestId: request.requestId, requester, buyer, merchant, entry, quantity }).replace(/<button[^>]*>[\s\S]*?<\/button>/g, ""),
           rejectClose: false, modal: true,
           yes: { label: "Approve" }, no: { label: "Deny" }
         });
@@ -644,7 +669,7 @@ async function processPurchase(request, authenticatedUserId) {
         pendingApprovals.set(request.requestId, { request, requesterId: authenticatedUserId });
         try {
           await ChatMessage.create({
-            content: purchaseApprovalCard({ requestId: request.requestId, requester, merchant, entry, quantity }),
+            content: purchaseApprovalCard({ requestId: request.requestId, requester, buyer, merchant, entry, quantity }),
             whisper: game.users.filter(user => user.isGM).map(user => user.id),
             flags: { [MODULE_ID]: { purchaseApproval: { requestId: request.requestId, status: "pending", requesterId: authenticatedUserId, request } } }
           });
@@ -672,7 +697,7 @@ async function commitPurchase({ actorId, actorUuid, buyerId, stockId, quantity =
   merchant ??= game.actors.get(actorId);
   const buyer = game.actors.get(buyerId), requestingUser = game.users.get(authenticatedUserId);
   if (!merchant || !buyer || !requestingUser || !isConfiguredShop(merchant)) return { success: false, message: "The selected merchant or buyer is no longer available." };
-  if (!requestingUser.isGM && (requestingUser.character?.id !== buyer.id || !buyer.testUserPermission(requestingUser, CONST.DOCUMENT_OWNERSHIP_LEVELS.OWNER))) return { success: false, message: "You do not own that character." };
+  if (!requestingUser.isGM && !canShopAs(buyer, requestingUser)) return { success: false, message: "You do not own that character." };
   let stock = foundry.utils.deepClone(merchant.getFlag(MODULE_ID, "stock") ?? []), entry = stock.find(item => item.id === stockId);
   const count = Math.floor(Number(quantity));
   if (!Number.isSafeInteger(count) || count < 1) return { success: false, message: "Choose a valid purchase quantity." };
@@ -732,7 +757,7 @@ async function commitPurchase({ actorId, actorUuid, buyerId, stockId, quantity =
     stockUpdated = true;
     const escape = value => foundry.utils.escapeHTML(String(value ?? ""));
     const gmIds = game.users.filter(user => user.isGM).map(user => user.id);
-    const card = `<div class="merchant-purchase-card"><h3>Merchant Purchase</h3><p><strong>${escape(requestingUser.name)}</strong> purchased <strong>${count} × ${escape(entry.name)}</strong> from ${escape(merchant.name)} for ${escape(copperText(cost))}.</p></div>`;
+    const card = `<div class="merchant-purchase-card"><h3>Merchant Purchase</h3><p><strong>${escape(buyer.name)}</strong> (${escape(requestingUser.name)}) purchased <strong>${count} × ${escape(entry.name)}</strong> from ${escape(merchant.name)} for ${escape(copperText(cost))}.</p></div>`;
     void ChatMessage.create({ content: card, whisper: gmIds }).catch(error => console.error(`${MODULE_ID} | Could not create purchase chat card.`, error));
     return { success: true, message: `Purchased ${count} × ${entry.name} for ${copperText(cost)}.` };
   } catch (error) {
@@ -813,7 +838,7 @@ function promptGmSaleOffer(sale, { previous = null, rollSummary = "" } = {}) {
 async function processSaleRequest(request, authenticatedUserId) {
   const requester = game.users.get(authenticatedUserId), buyer = game.actors.get(request.buyerId), merchant = await resolveMerchant({ actorId: request.merchantId, actorUuid: request.merchantUuid });
   if (!requester || !buyer || !merchant || !isConfiguredShop(merchant)) return saleResultToPlayer(authenticatedUserId, request.requestId, { success: false, message: "That merchant or character is no longer available." });
-  if (!requester.isGM && (requester.character?.id !== buyer.id || !buyer.testUserPermission(requester, CONST.DOCUMENT_OWNERSHIP_LEVELS.OWNER))) return saleResultToPlayer(authenticatedUserId, request.requestId, { success: false, message: "You do not own the character offering these items." });
+  if (!requester.isGM && !canShopAs(buyer, requester)) return saleResultToPlayer(authenticatedUserId, request.requestId, { success: false, message: "You do not own the character offering these items." });
   const requestedItems = new Map();
   for (const requested of request.items ?? []) requestedItems.set(requested.itemId, (requestedItems.get(requested.itemId) ?? 0) + Math.floor(Number(requested.quantity)));
   const items = [];
@@ -874,9 +899,9 @@ function showPlayerSaleOffer(offer) {
   persuade.addEventListener("click", async () => {
     persuade.disabled = true;
     status.textContent = "Opening Foundry's Persuasion roll…";
-    const actor = game.user.character;
-    if (!actor || actor.id !== offer.buyerId) {
-      status.textContent = "Your assigned character changed. Reopen the shop offer using the character who submitted the items.";
+    const actor = game.actors.get(offer.buyerId);
+    if (!canShopAs(actor, game.user)) {
+      status.textContent = "You no longer control the character who submitted the items.";
       persuade.disabled = false;
       return;
     }
@@ -936,6 +961,10 @@ async function processSaleResponse(response, authenticatedUserId) {
     return;
   }
   if (response.action !== "persuade" || sale.persuasionUsed) return;
+  if (!sale.requester.isGM && !canShopAs(game.actors.get(sale.buyer.id), sale.requester)) {
+    pendingSales.delete(response.requestId);
+    return saleResultToPlayer(sale.requesterId, response.requestId, { success: false, message: "You no longer control the character offering these items." });
+  }
   const rollMessage = game.messages.get(response.rollMessageId);
   const rollAuthorId = rollMessage?.author?.id ?? rollMessage?.user?.id;
   const rollTotal = rollMessage?.rolls?.[0]?.total;
@@ -979,7 +1008,9 @@ async function rollMerchantInsight(merchant) {
   }
 }
 async function commitSale(sale) {
-  const { buyer, merchant, currentOffer } = sale;
+  const { merchant, currentOffer, requester } = sale;
+  const buyer = game.actors.get(sale.buyer.id);
+  if (!buyer || (!requester.isGM && !canShopAs(buyer, requester))) return { success: false, message: "You no longer control the character offering these items." };
   if (!isConfiguredShop(merchant)) return { success: false, message: "This merchant is no longer set up as a shop." };
   const total = currentOffer.lines.reduce((sum, line) => sum + line.offerCopper * line.quantity, 0);
   const buyerCurrency = foundry.utils.deepClone(buyer.system.currency ?? {}), merchantCurrency = foundry.utils.deepClone(merchant.system.currency ?? {});
@@ -1153,7 +1184,7 @@ class SellItemsSheet extends HandlebarsApplicationMixin(ApplicationV2) {
       try { data = TextEditor.getDragEventData(event); } catch { data = null; }
       if (data?.type !== "Item" || !data.uuid) return ui.notifications.warn("Drop an item from your character's inventory.");
       const item = await fromUuid(data.uuid).catch(() => null);
-      if (!item || item.parent?.id !== this.actor.id || !this.actor.items.has(item.id)) return ui.notifications.warn("Only items in your assigned character's inventory can be sold.");
+      if (!item || item.parent?.uuid !== this.actor.uuid || !this.actor.items.has(item.id)) return ui.notifications.warn("Only items in the selected character's inventory can be sold.");
       const available = itemQuantity(item);
       if (!available) return ui.notifications.warn(`${item.name} has no sellable quantity.`);
       const existing = this.staged.get(item.id);
@@ -1236,7 +1267,12 @@ class MerchantSheet extends HandlebarsApplicationMixin(ApplicationV2) {
     this.#filterStock();
   }
   get title() { return `${this.actor.name} — ${SHOP_TYPES[this.shopType] ?? SHOP_TYPES.general}`; }
+  get shopper() {
+    const actor = game.actors.get(this.shopperId);
+    return canShopAs(actor, game.user) ? actor : null;
+  }
   async _prepareContext() {
+    const shopper = this.shopper;
     this.shopType = this.actor.getFlag(MODULE_ID, "shopType") ?? this.shopType ?? "general";
     const stock = (this.actor.getFlag(MODULE_ID, "stock") ?? []).map(item => {
       const price = item.system?.price;
@@ -1265,7 +1301,8 @@ class MerchantSheet extends HandlebarsApplicationMixin(ApplicationV2) {
       stockTypeFilter: this.stockTypeFilter,
       allStockTypesActive: this.stockTypeFilter === "all",
       isGM: game.user.isGM,
-      canPurchase: !game.user.isGM && game.user.character?.type === "character",
+      shopperName: shopper?.name,
+      canPurchase: !game.user.isGM && Boolean(shopper),
       shopTypeLabel: SHOP_TYPES[this.shopType] ?? SHOP_TYPES.general,
       shopType: this.shopType,
       shopTypeOptions: Object.entries(SHOP_TYPES).map(([value, label]) => ({ value, label, selected: value === this.shopType })),
@@ -1396,8 +1433,8 @@ class MerchantSheet extends HandlebarsApplicationMixin(ApplicationV2) {
     this.render();
   }
   static async #buy(_event, target) {
-    const buyer = game.user.character;
-    if (!buyer) return ui.notifications.warn("Assign your user a character in User Configuration before purchasing.");
+    const buyer = this.shopper;
+    if (!buyer) return ui.notifications.warn("You no longer control the selected shopping character.");
     const stockEntry = (this.actor.getFlag(MODULE_ID, "stock") ?? []).find(item => item.id === target.dataset.id);
     if (!stockEntry || Number(stockEntry.quantity) < 1) return ui.notifications.warn("That item is out of stock.");
     const availableStock = Math.max(0, Math.floor(Number(stockEntry.quantity) || 0));
@@ -1416,8 +1453,8 @@ class MerchantSheet extends HandlebarsApplicationMixin(ApplicationV2) {
     this.render();
   }
   static async #sellItems() {
-    const buyer = game.user.character;
-    if (!buyer) return ui.notifications.warn("Assign your user a character in User Configuration before selling items.");
+    const buyer = this.shopper;
+    if (!buyer) return ui.notifications.warn("You no longer control the selected shopping character.");
     const characterSheet = buyer.sheet;
     if (characterSheet && !characterSheet.rendered) {
       try {
