@@ -91,7 +91,9 @@ The GM gets a pop-up box telling him the player wishes to sell items to the merc
 
 ![Send_offer](Screenshots/send-offer.png)
 
-If the GM offers the player a price for the items, the player can accept or decline.  Players can also try to persuade the NPC to change their offer via a **try persuasion** button. If the player wants to convince the merchant the items are worth more, a persuasion skill check box appears for the player to roll.  The GM also gets a pop-up asking them to make an Insight roll.  This becomes a contested roll against the character's Persuasion.  On a player success, the GM can revise the price, if they wish, and send the revised offer back to the player.  If the NPC wins, the player is notified that they failed to plead their case, and the offer is final.
+If the GM offers the player a price for the items, the player can accept or decline.  Players can also try to persuade the NPC to change their offer via a **try persuasion** button. If the player wants to convince the merchant the items are worth more, a persuasion skill check box appears for the player to roll.  
+
+The GM also gets a pop-up asking them to make an Insight roll.  This becomes a contested roll against the character's Persuasion.  On a player success, the GM can revise the price, if they wish, and send the revised offer back to the player.  If the NPC wins, the player is notified that they failed to plead their case, and the offer is final.
 
 The player can accept or decline the offer; the transaction will either complete (goods move to the NPC and money is added to the player) or the items will remain in the player's inventory. 
 
