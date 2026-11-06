@@ -63,7 +63,7 @@ Once you have finished stocking the store, click the **Done** button in the bott
 
 ### Buying Items
 
-Characters can interact with the shop once it's set up by double-clicking the NPC icon.  NPCs that do not have a shop set up do not open the NPC character sheet and will not open any shop.
+Characters can interact with the shop once it's set up by double-clicking the NPC icon.  NPCs without a shop set up do not open the NPC character sheet and will not open a shop.
 
 Highlight your character and double-click on the NPC to open the storefront.
 
@@ -81,13 +81,15 @@ To complete the transaction, click **Purchase Basket**.  The items will transfer
 
 ### Selling Items and Haggling
 
-The **Sell Items** button lets players drag items from their character sheet into the sell items window and ask the Merchant to buy them.    Clicking it opens the player's character sheet and a window for items to be dropped into.  Once the player has finished adding items to sell, they click the **Confirm Items** button.
+The **Sell Items** button lets players drag items from their character sheet into the sell items window and ask the Merchant to buy them.    Clicking it opens the player's character sheet and a window where they can drop items.  Once the player has finished adding items to sell, they click the **Confirm Items** button.
 
 ![Sell_Items](Screenshots/sell-items.png)
 
 The GM gets a pop-up box telling him the player wishes to sell items to the merchant.  The GM can make an offer to the player or decline.  Prices are shown in GP, and it will accept decimals.
 
-If the GM offers the player a price for the items, the player can accept or decline.  Players can also try to persuade the NPC to change their offer via a **try persuasion** button. If the player wants to convince the merchant the items are worth more, a persuasion skill check box appears for the player to roll.  The GM also gets a pop-up asking them to make an Insight roll.  This becomes a contested roll against the character's Persuasion.  On a player success, the GM can revise the price, if they wish, and send the revised offer back to the player.  If the NPC wins, the player is notified that they were unsuccessful in pleading their case to the NPC, and the offer is final.
+![Sell_Items](Screenshots/purchase-items.png)
+
+If the GM offers the player a price for the items, the player can accept or decline.  Players can also try to persuade the NPC to change their offer via a **try persuasion** button. If the player wants to convince the merchant the items are worth more, a persuasion skill check box appears for the player to roll.  The GM also gets a pop-up asking them to make an Insight roll.  This becomes a contested roll against the character's Persuasion.  On a player success, the GM can revise the price, if they wish, and send the revised offer back to the player.  If the NPC wins, the player is notified that they failed to plead their case, and the offer is final.
 
 The player can accept or decline the offer; the transaction will either complete (goods move to the NPC and money is added to the player) or the items will remain in the player's inventory. 
 
