@@ -20,6 +20,8 @@ The manifest lists Foundry v14 as verified and requires Foundry v13 or later and
 
 ## Usage & Current Features
 
+# GM Side Information
+
 ### Opening a Shop
 
 As the GM, open up the NPCs character sheet and click the shop icon on the top bar; this will open up the shop interface
@@ -51,15 +53,23 @@ Items that have no price are highlighted for the GMS attention.
 To change the price and quantity, change the values and then click the save icon to store the new data.
 Clicking the same item multiple times will add additional units of the same item to the shop stock.
 
-There is also the function to add random items from the selected items  The most that can be added at any one time is 40 to ensure the stock loading does not take too long.
+There is also the function to add random items from the selected items  It cannot add more items than are in the compendium
 
 Once you have completed stocking the store, you can click the **Done** button in the bottom right hand corner of the window.  You are returned to the main shop interface with a list of items stocked.
 
 ![Items_in_stock](Screenshots/stock.png)
 
+#Player Side Information
+
 ### Buying Items
 
-Characters can interact with the shop once it has been set By double clicking on the NPC their shop interace opens.
+Characters can interact with the shop once it has been set up by double clicking on the NPC icon.  NPCs that do not have a shop set up, does not open the NPC character sheet and will not open any shop.
+
+Highlight your character and double click on the NPC to open the store front.
+
+![Store_Front](Screenshots/store-front.png)
+
+The players can scroll through the shop and add 
 Click **Purchase**, choose a quantity, and review the total and your character's purse before confirming. With an active GM connected, the module transfers the items and currency, updates the stock, and sends the GM a private receipt.
 
 Items need a price before they can be purchased. Items priced at **0** require GM approval. Choose **GM chat card** or **GM pop-up dialog** under **Game Settings → Configure Settings → Merchant NPC**.
