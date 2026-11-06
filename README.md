@@ -79,6 +79,8 @@ Items priced at **0** require GM approval before you can add them to the basket.
 
 To complete the transaction, click **Purchase Basket**.  The items will transfer to your inventory, and the cost will be deducted from your money. If you have insufficient funds, you will be advised.
 
+![Sell_Items](Screenshots/purchase-items.png)
+
 ### Selling Items and Haggling
 
 The **Sell Items** button lets players drag items from their character sheet into the sell items window and ask the Merchant to buy them.    Clicking it opens the player's character sheet and a window where they can drop items.  Once the player has finished adding items to sell, they click the **Confirm Items** button.
@@ -87,7 +89,7 @@ The **Sell Items** button lets players drag items from their character sheet int
 
 The GM gets a pop-up box telling him the player wishes to sell items to the merchant.  The GM can make an offer to the player or decline.  Prices are shown in GP, and it will accept decimals.
 
-![Sell_Items](Screenshots/purchase-items.png)
+![Send_offer](Screenshots/send-offer.png)
 
 If the GM offers the player a price for the items, the player can accept or decline.  Players can also try to persuade the NPC to change their offer via a **try persuasion** button. If the player wants to convince the merchant the items are worth more, a persuasion skill check box appears for the player to roll.  The GM also gets a pop-up asking them to make an Insight roll.  This becomes a contested roll against the character's Persuasion.  On a player success, the GM can revise the price, if they wish, and send the revised offer back to the player.  If the NPC wins, the player is notified that they failed to plead their case, and the offer is final.
 
