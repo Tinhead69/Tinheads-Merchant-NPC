@@ -43,19 +43,19 @@ Standard presets are **Poor** (200 gp), **Average** (500 gp), and **Rich** (1,00
 
 Clicking **Add Items** allows you to pull up the stocking interface.  Here you can sort items by type (to create bespoke shops if required) and select which compendiums the items need to be selected from.  There is also a function to add items from a predetermined roll table. 
 
-When you have decided what sort of items the merchant should stock, clicking on the different installed compendiums filters the main window with the types of items available in those compendiums.  Prices are taken from the compendiums if previously inputted.
+Once you decide what items the merchant should stock, clicking the installed compendiums filters the main window to show the item types available in those compendiums.  Prices are taken from the compendiums if they were previously entered.
 
 ![Stock_interface](Screenshots/stock-window.png)
 
 Use the shop's search and type filters to find stock. Hover over an item name to see its description. GMs can adjust quantities and prices, remove individual listings, or clear the shop.
 Items that have no price are highlighted for the GMS attention. 
 
-To change the price and quantity, change the values and then click the save icon to store the new data.
-Clicking the same item multiple times will add additional units of the same item to the shop stock.
+To change the price and quantity, update the values, then click the save icon to save the new data.
+Clicking the same item multiple times adds additional units of that item to the shop stock.
 
 There is also the function to add random items from the selected items  It cannot add more items than are in the compendium
 
-Once you have completed stocking the store, you can click the **Done** button in the bottom right hand corner of the window.  You are returned to the main shop interface with a list of items stocked.
+Once you have finished stocking the store, click the **Done** button in the bottom-right corner of the window.  You return to the main shop interface with a list of stocked items.
 
 ![Items_in_stock](Screenshots/stock.png)
 
@@ -63,31 +63,31 @@ Once you have completed stocking the store, you can click the **Done** button in
 
 ### Buying Items
 
-Characters can interact with the shop once it has been set up by double clicking on the NPC icon.  NPCs that do not have a shop set up, does not open the NPC character sheet and will not open any shop.
+Characters can interact with the shop once it's set up by double-clicking the NPC icon.  NPCs that do not have a shop set up do not open the NPC character sheet and will not open any shop.
 
-Highlight your character and double click on the NPC to open the store front.
+Highlight your character and double-click on the NPC to open the storefront.
 
 ![Store_Front](Screenshots/store-front.png)
 
-The players can scroll through the shop and add items to a basket. Allowing them to checkout with multiple items at once. Clicking **Add item** to basket will add one item at a time.
+The players can scroll through the shop and add items to a basket. This lets them check out multiple items at once. Clicking **Add to Basket** will add one item at a time.
 
 ![Items_in_basket](Screenshots/items-in-basket.png)
 
 With an active GM connected, the module transfers the items and currency, updates the stock, and sends the GM a private receipt.
 
-Items priced at **0** require GM approval before being added to the basket. Choose **GM chat card** or **GM pop-up dialog** under **Game Settings → Configure Settings → Merchant NPC**.
+Items priced at **0** require GM approval before you can add them to the basket. Choose **GM chat card** or **GM pop-up dialogue** under **Game Settings → Configure Settings → Merchant NPC**.
 
-To complete the transaction, click **Purchase Basket**.  The items will be transfered to your inventory and the cost deducted from your money. If you have insufficient funds, you will be advised.
+To complete the transaction, click **Purchase Basket**.  The items will transfer to your inventory, and the cost will be deducted from your money. If you have insufficient funds, you will be advised.
 
 ### Selling Items and Haggling
 
-The **Sell Items** button allows the players to drag items from their character sheet into the sell items window and ask the Merchant to purchase them.  
+The **Sell Items** button lets players drag items from their character sheet into the sell items window and ask the Merchant to buy them.    Clicking it opens the player's character sheet and a window for items to be dropped into.  Once the player has finished adding items to sell, they click the **Sell items** button.
 
-The GM gets a pop up box telling him the player wishes to sell items to the merchant.  The GM can make an offer to the player or decline the offer.  Prices are shown in GP and it will accept decimals.
+The GM gets a pop-up box telling him the player wishes to sell items to the merchant.  The GM can make an offer to the player or decline.  Prices are shown in GP, and it will accept decimals.
 
-If offering the player a price for the items, they can decide to accept or decline the offer.  There is also a chance for the players to try and persuade the NPC to change their offer.  A pop up asks the GM to make an insight roll contested against the characters persuasion.  On a player success the GM can revise the price if they wish to do so, sending the revised offer back to the player.  If the NPC wins, the player is notified that they were unsuccessful in pleading their case to the NPC and it is the final offer.
+If the GM offers the player a price for the items, the player can accept or decline.  Players can also try to persuade the NPC to change their offer via a **try persuasion** button. If the player wants to convince the merchant the items are worth more, a persuasion skill check box appears for the player to roll.  The GM also gets a pop-up asking them to make an Insight roll.  This becomes a contested roll against the character's Persuasion.  On a player success, the GM can revise the price, if they wish, and send the revised offer back to the player.  If the NPC wins, the player is notified that they were unsuccessful in pleading their case to the NPC, and the offer is final.
 
-The player can accept or decline the offer at which time the transaction will either complete and the goods moved to the NPC and the money added to the player or the items are retained in the players inventory. 
+The player can accept or decline the offer; the transaction will either complete (goods move to the NPC and money is added to the player) or the items will remain in the player's inventory. 
 
 
 ## Bug Reporting
