@@ -26,8 +26,8 @@
       {{#each basketLines as |line|}}
       <li>
         <strong>{{line.name}}</strong>
-        <span>Qty {{line.quantity}}</span>
-        <span>{{line.costText}}</span>
+        <span class="merchant-basket-quantity">Qty {{line.quantity}}</span>
+        <span class="merchant-basket-price">{{line.costText}}</span>
         <button type="button" data-action="changeBasket" data-id="{{line.stockId}}" data-change="-1" aria-label="Remove one {{line.name}}" {{#if @root.checkoutPending}}disabled{{/if}}>−</button>
         <button type="button" data-action="changeBasket" data-id="{{line.stockId}}" data-change="1" aria-label="Add one {{line.name}}" {{#unless line.canAdd}}disabled{{/unless}}>+</button>
         <button type="button" data-action="changeBasket" data-id="{{line.stockId}}" data-change="remove" aria-label="Remove {{line.name}} from basket" {{#if @root.checkoutPending}}disabled{{/if}}>Remove</button>
