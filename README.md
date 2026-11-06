@@ -24,7 +24,7 @@ The manifest lists Foundry v14 as verified and requires Foundry v13 or later and
 
 As the GM, open up the NPCs character sheet and click the shop icon on the top bar; this will open up the shop interface
 
-![Shop Icon location](screenshots/shop icon location.png)
+![Shop Icon location](Screenshots/shop icon location.png)
 
 This icon is available to all NPCs, however it does not create a shop until this icon is clicked.
 
