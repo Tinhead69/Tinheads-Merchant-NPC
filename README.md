@@ -81,7 +81,7 @@ To complete the transaction, click **Purchase Basket**.  The items will transfer
 
 ### Selling Items and Haggling
 
-The **Sell Items** button lets players drag items from their character sheet into the sell items window and ask the Merchant to buy them.    Clicking it opens the player's character sheet and a window for items to be dropped into.  Once the player has finished adding items to sell, they click the **Sell items** button.
+The **Sell Items** button lets players drag items from their character sheet into the sell items window and ask the Merchant to buy them.    Clicking it opens the player's character sheet and a window for items to be dropped into.  Once the player has finished adding items to sell, they click the **Confirm Items** button.
 
 ![Sell_Items](Screenshots/sell-items.png)
 
