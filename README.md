@@ -69,17 +69,26 @@ Highlight your character and double click on the NPC to open the store front.
 
 ![Store_Front](Screenshots/store-front.png)
 
-The players can scroll through the shop and add items to a basket. Allowing them to checkout with multiple items at once. Clicking add item to basket will add one item at a time.
+The players can scroll through the shop and add items to a basket. Allowing them to checkout with multiple items at once. Clicking **Add item** to basket will add one item at a time.
 
-Click **Purchase**, choose a quantity, and review the total and your character's purse before confirming. With an active GM connected, the module transfers the items and currency, updates the stock, and sends the GM a private receipt.
+![Items_in_basket](Screenshots/items-in-basket.png)
 
-Items need a price before they can be purchased. Items priced at **0** require GM approval. Choose **GM chat card** or **GM pop-up dialog** under **Game Settings → Configure Settings → Merchant NPC**.
+With an active GM connected, the module transfers the items and currency, updates the stock, and sends the GM a private receipt.
+
+Items priced at **0** require GM approval before being added to the basket. Choose **GM chat card** or **GM pop-up dialog** under **Game Settings → Configure Settings → Merchant NPC**.
+
+To complete the transaction, click **Purchase Basket**.  The items will be transfered to your inventory and the cost deducted from your money. If you have insufficient funds, you will be advised.
 
 ### Selling Items and Haggling
 
 The **Sell Items** button allows the players to drag items from their character sheet into the sell items window and ask the Merchant to purchase them.  
 
-When the offer comes back, accept it, decline it, or try **Persuasion** against the merchant's **Insight**. A successful roll gives the GM a chance to revise the offer. Once you accept, the merchant pays your character and adds the items to shop stock.
+The GM gets a pop up box telling him the player wishes to sell items to the merchant.  The GM can make an offer to the player or decline the offer.  Prices are shown in GP and it will accept decimals.
+
+If offering the player a price for the items, they can decide to accept or decline the offer.  There is also a chance for the players to try and persuade the NPC to change their offer.  A pop up asks the GM to make an insight roll contested against the characters persuasion.  On a player success the GM can revise the price if they wish to do so, sending the revised offer back to the player.  If the NPC wins, the player is notified that they were unsuccessful in pleading their case to the NPC and it is the final offer.
+
+The player can accept or decline the offer at which time the transaction will either complete and the goods moved to the NPC and the money added to the player or the items are retained in the players inventory. 
+
 
 ## Bug Reporting
 
