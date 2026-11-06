@@ -69,14 +69,15 @@ Highlight your character and double click on the NPC to open the store front.
 
 ![Store_Front](Screenshots/store-front.png)
 
-The players can scroll through the shop and add 
+The players can scroll through the shop and add items to a basket. Allowing them to checkout with multiple items at once. Clicking add item to basket will add one item at a time.
+
 Click **Purchase**, choose a quantity, and review the total and your character's purse before confirming. With an active GM connected, the module transfers the items and currency, updates the stock, and sends the GM a private receipt.
 
 Items need a price before they can be purchased. Items priced at **0** require GM approval. Choose **GM chat card** or **GM pop-up dialog** under **Game Settings → Configure Settings → Merchant NPC**.
 
 ### Selling Items and Haggling
 
-Click **Sell Items**, drag items from your character sheet into the sale window, and choose the quantities to offer. Click **Confirm Items** to send the list to the active GM, who can choose which items to buy and set a price for each.
+The **Sell Items** button allows the players to drag items from their character sheet into the sell items window and ask the Merchant to purchase them.  
 
 When the offer comes back, accept it, decline it, or try **Persuasion** against the merchant's **Insight**. A successful roll gives the GM a chance to revise the offer. Once you accept, the merchant pays your character and adds the items to shop stock.
 
