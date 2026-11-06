@@ -7,9 +7,10 @@ const ITEM_CATEGORIES = [
   ["magic", "Magic Items"], ["equipment", "Normal Equipment"]
 ];
 const pendingPurchases = new Map();
-const pendingApprovals = new Map();
+const processingApprovals = new Set();
 const pendingSales = new Map();
 const activeCartCounts = new Map();
+const pendingCartRefreshes = new Set();
 const cachedSourceItemData = new Map();
 const catalogSubscribers = new Set();
 const merchantSheetSubscribers = new Set();
@@ -29,22 +30,30 @@ function refreshMerchantSheets(merchantUuid) {
     sheet.render();
   }
 }
+function scheduleCartRefresh(merchantUuid) {
+  if (pendingCartRefreshes.has(merchantUuid)) return;
+  pendingCartRefreshes.add(merchantUuid);
+  requestAnimationFrame(() => {
+    pendingCartRefreshes.delete(merchantUuid);
+    refreshMerchantSheets(merchantUuid);
+  });
+}
 function applyCartCount({ merchantUuid, stockId, userId, quantity, expiresAt }) {
   if (!merchantUuid || !stockId || !userId || !game.users.get(userId)) return;
   const key = cartCountKey(merchantUuid, stockId, userId);
+  const previous = activeCartCounts.get(key);
+  if (previous) window.clearTimeout(previous.timer);
   const count = Math.floor(Number(quantity));
-  if (count > 0 && Number(expiresAt) > Date.now()) activeCartCounts.set(key, { merchantUuid, stockId, userId, quantity: count, expiresAt: Number(expiresAt) });
-  else activeCartCounts.delete(key);
-  refreshMerchantSheets(merchantUuid);
-  if (count > 0 && Number(expiresAt) > Date.now()) {
-    window.setTimeout(() => {
-      const current = activeCartCounts.get(key);
-      if (current?.expiresAt === Number(expiresAt) && current.expiresAt <= Date.now()) {
-        activeCartCounts.delete(key);
-        refreshMerchantSheets(merchantUuid);
-      }
-    }, Math.max(0, Number(expiresAt) - Date.now() + 10));
-  }
+  const now = Date.now();
+  const expiry = Math.min(Number(expiresAt), now + 120000);
+  if (Number.isSafeInteger(count) && count > 0 && expiry > now) {
+    const timer = window.setTimeout(() => {
+      activeCartCounts.delete(key);
+      scheduleCartRefresh(merchantUuid);
+    }, expiry - now);
+    activeCartCounts.set(key, { merchantUuid, stockId, quantity: count, expiresAt: expiry, timer });
+  } else activeCartCounts.delete(key);
+  scheduleCartRefresh(merchantUuid);
 }
 function publishCartCount(merchantUuid, stockId, quantity) {
   const payload = { type: "cart-count", merchantUuid, stockId, userId: game.user.id, quantity, expiresAt: Date.now() + 120000 };
@@ -53,9 +62,9 @@ function publishCartCount(merchantUuid, stockId, quantity) {
 }
 function getCartQuantity(merchantUuid, stockId) {
   let total = 0;
-  for (const [key, cart] of activeCartCounts) {
-    if (cart.expiresAt <= Date.now()) activeCartCounts.delete(key);
-    else if (cart.merchantUuid === merchantUuid && cart.stockId === stockId) total += cart.quantity;
+  const now = Date.now();
+  for (const cart of activeCartCounts.values()) {
+    if (cart.expiresAt > now && cart.merchantUuid === merchantUuid && cart.stockId === stockId) total += cart.quantity;
   }
   return total;
 }
@@ -179,8 +188,11 @@ Hooks.once("ready", () => {
   game.socket.on(`module.${MODULE_ID}`, payload => {
     if (payload?.type === "cart-count" && payload.userId !== game.user.id) applyCartCount(payload);
   });
+  const openingShops = new Set();
   game.merchantNPC = { open: async (actor) => {
     if (!actor) return ui.notifications.warn("Merchant NPC could not be found.");
+    if (openingShops.has(actor.uuid)) return null;
+    openingShops.add(actor.uuid);
     try {
       if (game.user.isGM) await actor.setFlag(MODULE_ID, "isShop", true);
       const shopper = game.user.isGM ? undefined : await chooseShopper(game.user);
@@ -194,6 +206,8 @@ Hooks.once("ready", () => {
       console.error(`${MODULE_ID} | Could not open merchant shop`, { actor: actor?.name, error });
       ui.notifications.error(`Could not open ${actor.name}'s shop. Check the browser console for Merchant NPC details.`);
       return null;
+    } finally {
+      openingShops.delete(actor.uuid);
     }
   } };
   // In v13 the normal canvas double-click is handled by TokenLayer, not Token.
@@ -244,7 +258,7 @@ Hooks.once("ready", () => {
       catch (error) {
         console.error(`${MODULE_ID} | Sale response failed.`, error);
         const pending = pendingSales.get(saleResponse.requestId);
-        if (pending) await sendSaleOffer(pending, { outcome: "The negotiation could not be processed; the current offer still stands.", persuasionUsed: true });
+        if (pending?.currentOffer) await sendSaleOffer(pending, { outcome: "The negotiation could not be processed; the current offer still stands.", persuasionUsed: pending.persuasionUsed });
       }
       return;
     }
@@ -293,7 +307,12 @@ Hooks.once("ready", () => {
       button.addEventListener("click", async event => {
         event.preventDefault();
         const approve = button.dataset.merchantApproval === "approve";
-        await resolvePurchaseApproval(message, approval.requestId, approve);
+        try {
+          await resolvePurchaseApproval(message, approval.requestId, approve);
+        } catch (error) {
+          console.error(`${MODULE_ID} | Could not finish processing purchase approval.`, error);
+          ui.notifications.error("Could not finish processing the approval. Check the character inventory and merchant stock.");
+        }
       }, { once: true });
     }
   });
@@ -584,22 +603,24 @@ function promptPurchase({ item, buyer, stockEntry, availableStock, onQuantityCha
   });
 }
 
-const purchaseQueues = new Map();
+const transactionQueues = new Map();
 function resolveMerchant(request) {
-  if (request.actorUuid?.startsWith("Actor.")) return Promise.resolve(game.actors.get(request.actorId) ?? null);
+  if (request.actorUuid?.startsWith("Actor.")) return Promise.resolve(game.actors.get(request.actorUuid.slice("Actor.".length)) ?? null);
   if (request.actorUuid) return fromUuid(request.actorUuid).catch(() => null);
   return Promise.resolve(game.actors.get(request.actorId) ?? null);
 }
-async function withPurchaseLock(actorId, operation) {
-  const previous = purchaseQueues.get(actorId) ?? Promise.resolve();
+async function withTransactionLock(merchantId, buyerId, operation) {
+  const actorIds = new Set([merchantId, buyerId]);
+  const previous = [...actorIds].map(id => transactionQueues.get(id));
   let release;
   const current = new Promise(resolve => { release = resolve; });
-  purchaseQueues.set(actorId, current);
-  await previous;
+  // Reserve both actors before yielding so overlapping purchases and sales serialize.
+  for (const id of actorIds) transactionQueues.set(id, current);
+  await Promise.all(previous);
   try { return await operation(); }
   finally {
     release();
-    if (purchaseQueues.get(actorId) === current) purchaseQueues.delete(actorId);
+    for (const id of actorIds) if (transactionQueues.get(id) === current) transactionQueues.delete(id);
   }
 }
 function sendPurchaseResult(recipientId, requestId, result) {
@@ -616,35 +637,40 @@ function purchaseApprovalCard({ requestId, requester, buyer, merchant, entry, qu
   return `<div class="merchant-approval-card" data-request-id="${escape(requestId)}"><h3>Free Purchase Approval</h3><p><strong>${escape(buyer.name)}</strong> (${escape(requester.name)}) requests ${quantity} × <strong>${escape(entry.name)}</strong> from ${escape(merchant.name)}.</p><p>This item has a total price of 0.</p><button type="button" data-merchant-approval="approve">Approve</button> <button type="button" data-merchant-approval="deny">Deny</button></div>`;
 }
 async function resolvePurchaseApproval(message, requestId, approved) {
-  if (!game.user.isGM || game.users.activeGM?.id !== game.user.id) return;
+  if (!game.user.isGM || game.users.activeGM?.id !== game.user.id || !message.author?.isGM) return;
   const approval = message.getFlag(MODULE_ID, "purchaseApproval");
-  const pending = pendingApprovals.get(requestId) ?? (approval?.request && approval?.requesterId
-    ? { request: approval.request, requesterId: approval.requesterId }
-    : null);
-  if (!pending) return;
-  pendingApprovals.delete(requestId);
-  const result = approved
-    ? await withPurchaseLock(pending.request.actorId, () => commitPurchase(pending.request, pending.requesterId))
-    : { success: false, message: "The GM declined this free-item purchase." };
-  const status = result.success ? "approved" : approved ? "failed" : "denied";
-  const safeText = foundry.utils.escapeHTML(result.message);
-  await message.update({
-    content: `<div class="merchant-approval-card"><h3>Free Purchase ${status}</h3><p>${safeText}</p></div>`,
-    [`flags.${MODULE_ID}.purchaseApproval.status`]: status
-  });
-  await sendPurchaseResult(pending.requesterId, requestId, result);
+  if (approval?.status !== "pending" || approval.requestId !== requestId || !approval.request || !approval.requesterId || processingApprovals.has(message.id)) return;
+  processingApprovals.add(message.id);
+  const statusPath = `flags.${MODULE_ID}.purchaseApproval.status`;
+  try {
+    // Claim the persisted card before moving stock, including across client reloads.
+    await message.update({ [statusPath]: "processing" });
+    const { request, requesterId } = approval;
+    const result = approved
+      ? await commitApprovedPurchase(await resolveMerchant(request), request, requesterId)
+      : { success: false, message: "The GM declined this free-item purchase." };
+    const status = result.success ? "approved" : approved ? "failed" : "denied";
+    const safeText = foundry.utils.escapeHTML(result.message);
+    await message.update({
+      content: `<div class="merchant-approval-card"><h3>Free Purchase ${status}</h3><p>${safeText}</p></div>`,
+      [statusPath]: status
+    });
+    await sendPurchaseResult(requesterId, requestId, result);
+  } finally {
+    processingApprovals.delete(message.id);
+  }
+}
+async function commitApprovedPurchase(merchant, request, requesterId) {
+  if (!merchant) return { success: false, message: "The selected merchant is no longer available." };
+  return withTransactionLock(merchant.id, request.buyerId, () => commitPurchase(merchant, request, requesterId, { approvedFree: true }));
 }
 async function processPurchase(request, authenticatedUserId) {
-  const previous = purchaseQueues.get(request.actorId) ?? Promise.resolve();
-  let release;
-  const current = new Promise(resolve => { release = resolve; });
-  purchaseQueues.set(request.actorId, current);
-  await previous;
-  try {
+  const merchant = await resolveMerchant(request);
+  if (!merchant) return { success: false, message: "That merchant is no longer available." };
+  const result = await withTransactionLock(merchant.id, request.buyerId, async () => {
     const requester = game.users.get(authenticatedUserId);
     const buyer = game.actors.get(request.buyerId);
-    const merchant = await resolveMerchant(request);
-    if (!requester || !buyer || !merchant || !isConfiguredShop(merchant)) return { success: false, message: "That merchant or buyer is no longer available." };
+    if (!requester || !buyer || !isConfiguredShop(merchant)) return { success: false, message: "That merchant or buyer is no longer available." };
     if (!requester.isGM && !canShopAs(buyer, requester)) {
       return { success: false, message: "You do not own the selected buyer character." };
     }
@@ -653,48 +679,31 @@ async function processPurchase(request, authenticatedUserId) {
     if (!entry || !Number.isSafeInteger(quantity) || quantity < 1 || Number(entry.quantity) < quantity) return { success: false, message: "The requested quantity is no longer available." };
     const price = entry.system?.price ?? {};
     const rawPrice = price.value ?? price.amount;
-    const denomination = String(price.denomination ?? "gp").toLowerCase();
-    const unitCost = Math.round(Number(rawPrice) * CURRENCY[denomination]);
-    if (!requester.isGM && rawPrice !== undefined && rawPrice !== null && rawPrice !== "" && Number.isFinite(Number(rawPrice)) && Number(rawPrice) === 0) {
-      const mode = game.settings.get(MODULE_ID, "zeroPriceApproval");
-      if (mode === "dialog") {
-        const approved = await foundry.applications.api.DialogV2.confirm({
-          window: { title: "Approve Free Purchase" },
-          content: purchaseApprovalCard({ requestId: request.requestId, requester, buyer, merchant, entry, quantity }).replace(/<button[^>]*>[\s\S]*?<\/button>/g, ""),
-          rejectClose: false, modal: true,
-          yes: { label: "Approve" }, no: { label: "Deny" }
-        });
-        if (!approved) return { success: false, message: "The GM declined this free-item purchase." };
-      } else {
-        pendingApprovals.set(request.requestId, { request, requesterId: authenticatedUserId });
-        try {
-          await ChatMessage.create({
-            content: purchaseApprovalCard({ requestId: request.requestId, requester, buyer, merchant, entry, quantity }),
-            whisper: game.users.filter(user => user.isGM).map(user => user.id),
-            flags: { [MODULE_ID]: { purchaseApproval: { requestId: request.requestId, status: "pending", requesterId: authenticatedUserId, request } } }
-          });
-        } catch (error) {
-          pendingApprovals.delete(request.requestId);
-          throw error;
-        }
-        await sendPurchaseResult(authenticatedUserId, request.requestId, { success: true, pending: true, message: "Your free-item purchase request is waiting for GM approval." });
-        return { success: true, pending: true };
-      }
+    if (requester.isGM || rawPrice == null || rawPrice === "" || Number(rawPrice) !== 0) {
+      return commitPurchase(merchant, request, authenticatedUserId);
     }
-    return await commitPurchase(request, authenticatedUserId);
-  }
-  finally {
-    release();
-    if (purchaseQueues.get(request.actorId) === current) purchaseQueues.delete(request.actorId);
-  }
+    const content = purchaseApprovalCard({ requestId: request.requestId, requester, buyer, merchant, entry, quantity });
+    if (game.settings.get(MODULE_ID, "zeroPriceApproval") === "dialog") return { approvalContent: content };
+    await ChatMessage.create({
+      content,
+      whisper: game.users.filter(user => user.isGM).map(user => user.id),
+      flags: { [MODULE_ID]: { purchaseApproval: { requestId: request.requestId, status: "pending", requesterId: authenticatedUserId, request } } }
+    });
+    await sendPurchaseResult(authenticatedUserId, request.requestId, { success: true, pending: true, message: "Your free-item purchase request is waiting for GM approval." });
+    return { success: true, pending: true };
+  });
+  if (!result.approvalContent) return result;
+  const approved = await foundry.applications.api.DialogV2.confirm({
+    window: { title: "Approve Free Purchase" },
+    content: result.approvalContent.replace(/<button[^>]*>[\s\S]*?<\/button>/g, ""),
+    rejectClose: false, modal: true,
+    yes: { label: "Approve" }, no: { label: "Deny" }
+  });
+  if (!approved) return { success: false, message: "The GM declined this free-item purchase." };
+  return commitApprovedPurchase(merchant, request, authenticatedUserId);
 }
 
-async function commitPurchase({ actorId, actorUuid, buyerId, stockId, quantity = 1 }, authenticatedUserId) {
-  // A shop can be opened from an unlinked token, where its synthetic actor may
-  // have different stock from the base world actor with the same actor id.
-  let merchant = actorUuid?.startsWith("Actor.") ? game.actors.get(actorId) : null;
-  if (!merchant && actorUuid) merchant = await fromUuid(actorUuid).catch(() => null);
-  merchant ??= game.actors.get(actorId);
+async function commitPurchase(merchant, { buyerId, stockId, quantity = 1 }, authenticatedUserId, { approvedFree = false } = {}) {
   const buyer = game.actors.get(buyerId), requestingUser = game.users.get(authenticatedUserId);
   if (!merchant || !buyer || !requestingUser || !isConfiguredShop(merchant)) return { success: false, message: "The selected merchant or buyer is no longer available." };
   if (!requestingUser.isGM && !canShopAs(buyer, requestingUser)) return { success: false, message: "You do not own that character." };
@@ -705,6 +714,7 @@ async function commitPurchase({ actorId, actorUuid, buyerId, stockId, quantity =
   const price = entry.system?.price ?? {}, rawPrice = price.value ?? price.amount, denomination = String(price.denomination ?? "gp").toLowerCase(), coinValue = CURRENCY[denomination];
   const hasPrice = rawPrice !== undefined && rawPrice !== null && rawPrice !== "";
   if (!hasPrice) return { success: false, message: "This item has no price set. Ask the DM to set a price before purchasing." };
+  if (approvedFree && Number(rawPrice) !== 0) return { success: false, message: "The item is no longer free. Open the shop to see its current price." };
   const unitCost = Math.round(Number(rawPrice) * coinValue);
   const cost = unitCost * count;
   if (!Number.isSafeInteger(unitCost) || unitCost < 0 || !Number.isSafeInteger(cost)) return { success: false, message: "This item has an invalid price." };
@@ -839,6 +849,7 @@ async function processSaleRequest(request, authenticatedUserId) {
   const requester = game.users.get(authenticatedUserId), buyer = game.actors.get(request.buyerId), merchant = await resolveMerchant({ actorId: request.merchantId, actorUuid: request.merchantUuid });
   if (!requester || !buyer || !merchant || !isConfiguredShop(merchant)) return saleResultToPlayer(authenticatedUserId, request.requestId, { success: false, message: "That merchant or character is no longer available." });
   if (!requester.isGM && !canShopAs(buyer, requester)) return saleResultToPlayer(authenticatedUserId, request.requestId, { success: false, message: "You do not own the character offering these items." });
+  if (pendingSales.has(request.requestId)) return;
   const requestedItems = new Map();
   for (const requested of request.items ?? []) requestedItems.set(requested.itemId, (requestedItems.get(requested.itemId) ?? 0) + Math.floor(Number(requested.quantity)));
   const items = [];
@@ -943,14 +954,14 @@ function showPlayerSaleOffer(offer) {
 }
 async function processSaleResponse(response, authenticatedUserId) {
   const sale = pendingSales.get(response.requestId);
-  if (!sale || authenticatedUserId !== sale.requesterId) return;
+  if (!sale?.currentOffer || authenticatedUserId !== sale.requesterId || sale.negotiating) return;
   if (response.action === "decline") {
     pendingSales.delete(response.requestId);
     return saleResultToPlayer(sale.requesterId, response.requestId, { success: false, message: "You declined the merchant's offer." });
   }
   if (response.action === "accept") {
-    const result = await withPurchaseLock(sale.merchant.id, () => commitSale(sale));
     pendingSales.delete(response.requestId);
+    const result = await withTransactionLock(sale.merchant.id, sale.buyer.id, () => commitSale(sale));
     await saleResultToPlayer(sale.requesterId, response.requestId, result);
     if (result.success) {
       const escape = value => foundry.utils.escapeHTML(String(value ?? ""));
@@ -972,24 +983,29 @@ async function processSaleResponse(response, authenticatedUserId) {
   if (!rollMessage || rollAuthorId !== authenticatedUserId || rollMessage.speaker?.actor !== sale.buyer.id || rollFlag?.requestId !== response.requestId || rollFlag?.actorId !== sale.buyer.id || !Number.isFinite(rollTotal)) {
     return sendSaleOffer(sale, { outcome: "The Persuasion roll could not be verified. The current offer remains open.", persuasionUsed: false });
   }
-  let insightRoll;
+  sale.negotiating = true;
   try {
-    insightRoll = await rollMerchantInsight(sale.merchant);
-  } catch (error) {
-    console.error(`${MODULE_ID} | Merchant Insight roll failed.`, error);
-  }
-  if (!insightRoll || !Number.isFinite(insightRoll.total)) {
-    return sendSaleOffer(sale, { outcome: "The merchant's Insight roll was cancelled or unavailable. The current offer remains open.", persuasionUsed: false });
-  }
-  sale.persuasionUsed = true;
-  if (rollTotal > insightRoll.total) {
-    const rollSummary = `${sale.buyer.name} Persuasion: ${rollTotal}. ${sale.merchant.name} Insight: ${insightRoll.total}. The character won and may receive a revised offer.`;
-    const revised = await promptGmSaleOffer(sale, { previous: sale.currentOffer, rollSummary });
-    if (revised && !revised.keep) sale.currentOffer = revised;
-    await sendSaleOffer(sale, { outcome: "Your Persuasion check succeeded. The merchant is reconsidering the offer.", persuasionUsed: true });
-  } else {
-    const rollSummary = `${sale.buyer.name} Persuasion: ${rollTotal}. ${sale.merchant.name} Insight: ${insightRoll.total}. The merchant held firm; the offer is unchanged.`;
-    await sendSaleOffer(sale, { outcome: "The merchant was not persuaded. The offer remains unchanged.", persuasionUsed: true });
+    let insightRoll;
+    try {
+      insightRoll = await rollMerchantInsight(sale.merchant);
+    } catch (error) {
+      console.error(`${MODULE_ID} | Merchant Insight roll failed.`, error);
+    }
+    if (!insightRoll || !Number.isFinite(insightRoll.total)) {
+      return sendSaleOffer(sale, { outcome: "The merchant's Insight roll was cancelled or unavailable. The current offer remains open.", persuasionUsed: false });
+    }
+    sale.persuasionUsed = true;
+    if (rollTotal > insightRoll.total) {
+      const rollSummary = `${sale.buyer.name} Persuasion: ${rollTotal}. ${sale.merchant.name} Insight: ${insightRoll.total}. The character won and may receive a revised offer.`;
+      const revised = await promptGmSaleOffer(sale, { previous: sale.currentOffer, rollSummary });
+      if (revised && !revised.keep) sale.currentOffer = revised;
+      await sendSaleOffer(sale, { outcome: "Your Persuasion check succeeded. The merchant is reconsidering the offer.", persuasionUsed: true });
+    } else {
+      const rollSummary = `${sale.buyer.name} Persuasion: ${rollTotal}. ${sale.merchant.name} Insight: ${insightRoll.total}. The merchant held firm; the offer is unchanged.`;
+      await sendSaleOffer(sale, { outcome: "The merchant was not persuaded. The offer remains unchanged.", persuasionUsed: true });
+    }
+  } finally {
+    sale.negotiating = false;
   }
 }
 async function rollMerchantInsight(merchant) {
@@ -1048,8 +1064,10 @@ async function commitSale(sale) {
     try {
       if (merchantUpdateAttempted) await merchant.update({ "system.currency": merchantCurrency, [`flags.${MODULE_ID}.stock`]: originalStock });
       if (buyerMoneyAttempted) await buyer.update({ "system.currency": buyerCurrency });
-      const deletedSources = soldRecords.filter(record => fullItems.some(item => item.id === record.item.id) && !buyer.items.has(record.item.id)).map(record => record.data);
-      if (deletedSources.length) await buyer.createEmbeddedDocuments("Item", deletedSources);
+      const deletedSources = soldRecords
+        .filter(record => fullItems.includes(record.item) && !buyer.items.has(record.item.id))
+        .map(record => ({ ...record.data, _id: record.item.id }));
+      if (deletedSources.length) await buyer.createEmbeddedDocuments("Item", deletedSources, { keepId: true, keepEmbeddedIds: true });
       const partialRestores = soldRecords.filter(record => itemChanges.some(change => change._id === record.item.id) && buyer.items.has(record.item.id));
       if (partialRestores.length) await buyer.updateEmbeddedDocuments("Item", partialRestores.map(record => ({ _id: record.item.id, "system.quantity": record.originalQuantity })));
     } catch (rollbackError) { console.error(`${MODULE_ID} | Sale rollback also failed.`, rollbackError); }
@@ -1438,11 +1456,13 @@ class MerchantSheet extends HandlebarsApplicationMixin(ApplicationV2) {
     const stockEntry = (this.actor.getFlag(MODULE_ID, "stock") ?? []).find(item => item.id === target.dataset.id);
     if (!stockEntry || Number(stockEntry.quantity) < 1) return ui.notifications.warn("That item is out of stock.");
     const availableStock = Math.max(0, Math.floor(Number(stockEntry.quantity) || 0));
+    if (this.purchasePromptOpen) return;
+    this.purchasePromptOpen = true;
     const purchase = await promptPurchase({
       item: stockEntry, buyer, stockEntry, availableStock,
       onQuantityChange: quantity => publishCartCount(this.actor.uuid, stockEntry.id, quantity),
       onClose: () => publishCartCount(this.actor.uuid, stockEntry.id, 0)
-    });
+    }).finally(() => { this.purchasePromptOpen = false; });
     if (!purchase) return;
     const request = { requestId: foundry.utils.randomID(), actorId: this.actor.id, actorUuid: this.actor.uuid, buyerId: buyer.id, stockId: target.dataset.id, quantity: purchase.quantity };
     const result = game.user.isGM
