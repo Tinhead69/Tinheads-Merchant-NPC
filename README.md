@@ -83,6 +83,8 @@ To complete the transaction, click **Purchase Basket**.  The items will transfer
 
 The **Sell Items** button lets players drag items from their character sheet into the sell items window and ask the Merchant to buy them.    Clicking it opens the player's character sheet and a window for items to be dropped into.  Once the player has finished adding items to sell, they click the **Sell items** button.
 
+![Sell_Items](Screenshots/sell-items.png)
+
 The GM gets a pop-up box telling him the player wishes to sell items to the merchant.  The GM can make an offer to the player or decline.  Prices are shown in GP, and it will accept decimals.
 
 If the GM offers the player a price for the items, the player can accept or decline.  Players can also try to persuade the NPC to change their offer via a **try persuasion** button. If the player wants to convince the merchant the items are worth more, a persuasion skill check box appears for the player to roll.  The GM also gets a pop-up asking them to make an Insight roll.  This becomes a contested roll against the character's Persuasion.  On a player success, the GM can revise the price, if they wish, and send the revised offer back to the player.  If the NPC wins, the player is notified that they were unsuccessful in pleading their case to the NPC, and the offer is final.
