@@ -5,7 +5,7 @@
   "version": "1.0.3",
   "url": "https://github.com/Tinhead69/Tinheads-Merchant-NPC",
   "manifest": "https://raw.githubusercontent.com/Tinhead69/Tinheads-Merchant-NPC/main/module.json",
-  ""download": "https://github.com/Tinhead69/Tinheads-Merchant-NPC/archive/refs/heads/main.zip",
+  "download": "https://github.com/Tinhead69/Tinheads-Merchant-NPC/archive/refs/heads/main.zip",
   "bugs": "https://github.com/Tinhead69/Tinheads-Merchant-NPC/issues",
   "compatibility": {
     "minimum": "13",
