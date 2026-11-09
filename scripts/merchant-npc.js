@@ -164,6 +164,9 @@ Hooks.once("init", () => {
   });
 });
 
+const PAUSED_SHOP_MESSAGE = "The game is paused. The shop will be available when play resumes.";
+function isShopPaused(user = game.user) { return game.paused && !user?.isGM; }
+
 function canShopAs(actor, user) {
   return actor?.type === "character" && actor.testUserPermission(user, CONST.DOCUMENT_OWNERSHIP_LEVELS.OWNER);
 }
@@ -181,8 +184,13 @@ Hooks.once("ready", () => {
   game.socket.on(`module.${MODULE_ID}`, payload => {
     if (payload?.type === "cart-count" && payload.userId !== game.user.id) applyCartCount(payload);
   });
+  Hooks.on("pauseGame", paused => {
+    if (!paused || game.user.isGM) return;
+    for (const sheet of merchantSheetSubscribers) void sheet.close();
+  });
   const openingShops = new Set();
   const openShop = async (actor) => {
+    if (isShopPaused()) return ui.notifications.warn(PAUSED_SHOP_MESSAGE);
     if (actor?.type !== "npc") return ui.notifications.warn("Merchant NPC could not be found.");
     if (openingShops.has(actor.uuid)) return null;
     let shopper;
@@ -198,11 +206,16 @@ Hooks.once("ready", () => {
     try {
       if (game.user.isGM) await actor.setFlag(MODULE_ID, "isShop", true);
       if (!isConfiguredShop(actor)) return null;
+      if (isShopPaused()) return null;
       const sheet = [...merchantSheetSubscribers].find(open => open.actor.uuid === actor.uuid && open.rendered)
         ?? new MerchantSheet(actor);
       if (sheet.shopperId !== shopper?.id) sheet.resetBasket();
       sheet.shopperId = shopper?.id;
       await sheet.render(true);
+      if (isShopPaused()) {
+        await sheet.close();
+        return null;
+      }
       return sheet;
     } catch (error) {
       console.error(`${MODULE_ID} | Could not open merchant shop`, { actor: actor?.name, error });
@@ -629,6 +642,7 @@ async function approvePurchaseRequest(request, requesterId) {
     // Pending approval cards from older versions still complete their purchase.
     if (request.action !== "approveBasketItem") return commitPurchase(merchant, request, requesterId, { approvedFree: true });
     const requester = game.users.get(requesterId);
+    if (isShopPaused(requester)) return { success: false, message: PAUSED_SHOP_MESSAGE };
     const buyer = game.actors.get(request.buyerId);
     if (!requester || !canShopAs(buyer, requester) || !isConfiguredShop(merchant)) {
       return { success: false, message: "The shop or shopping character is no longer available." };
@@ -648,10 +662,12 @@ async function approvePurchaseRequest(request, requesterId) {
 }
 
 async function processPurchase(request, authenticatedUserId) {
+  if (isShopPaused(game.users.get(authenticatedUserId))) return { success: false, message: PAUSED_SHOP_MESSAGE };
   const merchant = await resolveMerchant(request);
   if (!merchant) return { success: false, message: "That merchant is no longer available." };
   const result = await withTransactionLock(merchant.id, request.buyerId, async () => {
     const requester = game.users.get(authenticatedUserId);
+    if (isShopPaused(requester)) return { success: false, message: PAUSED_SHOP_MESSAGE };
     const buyer = game.actors.get(request.buyerId);
     if (!requester || !buyer || !isConfiguredShop(merchant)) return { success: false, message: "That merchant or buyer is no longer available." };
     if (!requester.isGM && !canShopAs(buyer, requester)) return { success: false, message: "You do not own the selected buyer character." };
@@ -711,6 +727,7 @@ async function preparePurchasedItem(entry, quantity) {
 
 async function commitPurchase(merchant, request, authenticatedUserId, { approvedFree = false } = {}) {
   const buyer = game.actors.get(request.buyerId), requestingUser = game.users.get(authenticatedUserId);
+  if (isShopPaused(requestingUser)) return { success: false, message: PAUSED_SHOP_MESSAGE };
   if (!buyer || !requestingUser || !isConfiguredShop(merchant)) return { success: false, message: "The selected merchant or buyer is no longer available." };
   if (!requestingUser.isGM && !canShopAs(buyer, requestingUser)) return { success: false, message: "You do not own that character." };
   const originalStock = merchant.getFlag(MODULE_ID, "stock") ?? [];
@@ -751,6 +768,7 @@ async function commitPurchase(merchant, request, authenticatedUserId, { approved
       entry.quantity = Number(entry.quantity) - quantity;
       if (entry.quantity === 0) soldOut.add(entry.id);
     }
+    if (isShopPaused(requestingUser)) return { success: false, message: PAUSED_SHOP_MESSAGE };
     stage = "adding items to the character inventory";
     // Known IDs let us remove items if the document write fails partway through.
     for (const data of items) itemIds.add(data._id);
@@ -852,6 +870,7 @@ function promptGmSaleOffer(sale, { previous = null, rollSummary = "" } = {}) {
   return sheet.result;
 }
 async function processSaleRequest(request, authenticatedUserId) {
+  if (isShopPaused(game.users.get(authenticatedUserId))) return saleResultToPlayer(authenticatedUserId, request.requestId, { success: false, message: PAUSED_SHOP_MESSAGE });
   const requester = game.users.get(authenticatedUserId), buyer = game.actors.get(request.buyerId), merchant = await resolveMerchant({ actorId: request.merchantId, actorUuid: request.merchantUuid });
   if (!requester || !buyer || !merchant || !isConfiguredShop(merchant)) return saleResultToPlayer(authenticatedUserId, request.requestId, { success: false, message: "That merchant or character is no longer available." });
   if (!requester.isGM && !canShopAs(buyer, requester)) return saleResultToPlayer(authenticatedUserId, request.requestId, { success: false, message: "You do not own the character offering these items." });
@@ -873,6 +892,10 @@ async function processSaleRequest(request, authenticatedUserId) {
   if (!offer) {
     pendingSales.delete(request.requestId);
     return saleResultToPlayer(authenticatedUserId, request.requestId, { success: false, message: "The merchant declined to review this sale." });
+  }
+  if (isShopPaused(requester)) {
+    pendingSales.delete(request.requestId);
+    return saleResultToPlayer(authenticatedUserId, request.requestId, { success: false, message: PAUSED_SHOP_MESSAGE });
   }
   sale.currentOffer = offer;
   await sendSaleOffer(sale);
@@ -965,6 +988,7 @@ async function processSaleResponse(response, authenticatedUserId) {
     pendingSales.delete(response.requestId);
     return saleResultToPlayer(sale.requesterId, response.requestId, { success: false, message: "You declined the merchant's offer." });
   }
+  if (isShopPaused(sale.requester)) return saleResultToPlayer(sale.requesterId, response.requestId, { success: false, message: PAUSED_SHOP_MESSAGE });
   if (response.action === "accept") {
     pendingSales.delete(response.requestId);
     const result = await withTransactionLock(sale.merchant.id, sale.buyer.id, () => commitSale(sale));
@@ -1035,6 +1059,7 @@ async function rollMerchantInsight(merchant) {
 }
 async function commitSale(sale) {
   const { merchant, currentOffer, requester } = sale;
+  if (isShopPaused(requester)) return { success: false, message: PAUSED_SHOP_MESSAGE };
   const buyer = game.actors.get(sale.buyer.id);
   if (!buyer || (!requester.isGM && !canShopAs(buyer, requester))) return { success: false, message: "You no longer control the character offering these items." };
   if (!isConfiguredShop(merchant)) return { success: false, message: "This merchant is no longer set up as a shop." };
@@ -1300,7 +1325,7 @@ class MerchantSheet extends HandlebarsApplicationMixin(ApplicationV2) {
   get title() { return `${this.actor.name} — ${SHOP_TYPES[this.shopType] ?? SHOP_TYPES.general}`; }
   get shopper() {
     const actor = game.actors.get(this.shopperId);
-    return isConfiguredShop(this.actor) && canShopAs(actor, game.user) ? actor : null;
+    return !isShopPaused() && isConfiguredShop(this.actor) && canShopAs(actor, game.user) ? actor : null;
   }
   async _prepareContext() {
     const shopper = this.shopper;
@@ -1534,7 +1559,7 @@ class MerchantSheet extends HandlebarsApplicationMixin(ApplicationV2) {
       this.pendingBasketItems.delete(id);
       this.render();
       if (!result?.success || !result.approvalId) return ui.notifications.warn(result?.message ?? "The free item was not approved.");
-      if (this.shopper?.id !== buyer.id) return;
+      if (isShopPaused() || this.shopper?.id !== buyer.id) return;
       approvalId = result.approvalId;
     }
     const latest = (this.actor.getFlag(MODULE_ID, "stock") ?? []).find(item => item.id === id);
